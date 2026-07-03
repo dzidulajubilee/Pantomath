@@ -1,0 +1,44 @@
+# nfpm packaging spec for Pantomath
+# Build:
+#   nfpm package --config installer/rpm/nfpm.yaml --packager rpm --target dist/
+#   nfpm package --config installer/rpm/nfpm.yaml --packager deb --target dist/
+# Install nfpm: https://nfpm.goreleaser.com/install/  (no rpmbuild required)
+
+name: pantomath
+arch: amd64
+platform: linux
+version: "${VERSION}"
+section: net
+priority: optional
+maintainer: "Pantomath Project <noreply@example.com>"
+description: |
+  Pantomath - Threat Intelligence RSS Feed Dashboard.
+  Aggregates threat intel RSS/Atom feeds into a live-updating local web
+  dashboard. Add/remove sources from the UI. Ships with zero pre-loaded
+  sources.
+vendor: "Pantomath"
+homepage: "https://github.com/yourorg/pantomath"
+license: MIT
+
+depends:
+  - python3
+  - python3-venv
+
+contents:
+  - src: ../../backend
+    dst: /opt/pantomath/backend
+  - src: ../../frontend
+    dst: /opt/pantomath/frontend
+  - src: ../../config
+    dst: /opt/pantomath/config
+  - src: ../../requirements.txt
+    dst: /opt/pantomath/requirements.txt
+  - src: ./pantomath.service
+    dst: /etc/systemd/system/pantomath.service
+  - src: ../../icons/pantomath.svg
+    dst: /usr/share/pixmaps/pantomath.svg
+
+scripts:
+  postinstall: ./postinstall.sh
+  preremove: ./preremove.sh
+  postremove: ./postremove.sh

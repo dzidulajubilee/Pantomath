@@ -1,0 +1,28 @@
+[Unit]
+Description=Pantomath - Threat Intelligence Feed Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pantomath
+Group=pantomath
+Environment=PANTOMATH_DB=/var/lib/pantomath/pantomath.db
+Environment=PANTOMATH_PORT=7373
+Environment=PYTHONPATH=/opt/pantomath
+WorkingDirectory=/opt/pantomath
+ExecStart=/opt/pantomath/venv/bin/python3 -m uvicorn backend.app:app --host 0.0.0.0 --port ${PANTOMATH_PORT}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pantomath
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

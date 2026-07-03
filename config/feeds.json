@@ -1,0 +1,4 @@
+{
+  "_comment": "Optional starter sources. Empty by default so nothing is auto-added on install. Add entries here only if you want them pre-loaded on first run (e.g. for a scripted/fleet deployment). Format matches the 'Add Source' form in the UI.",
+  "sources": []
+}

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pantomath // Threat Intel</title>
+<link rel="icon" href="/static/assets/icons/pantomath.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/themes/pantomath.css">
+<script>
+  // Applied before first paint so there's no flash of the wrong theme.
+  (function(){
+    var saved = localStorage.getItem('pantomath-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+  })();
+</script>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-mark"><span></span></div>
+    <div>
+      <h1>PANTOMATH</h1>
+      <div class="sub">Threat Intelligence Feed Aggregator</div>
+    </div>
+  </div>
+  <div class="status-cluster">
+    <div class="conn-label"><span class="live-dot" id="connDot"></span><span id="connLabel">Connecting</span></div>
+    <div class="status-item"><span class="val" id="statSources">0</span><span class="lbl">Sources</span></div>
+    <div class="status-item"><span class="val" id="statItems">0</span><span class="lbl">Items / 24h</span></div>
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark theme">&#9789;</button>
+    <button class="btn btn-primary" id="addSourceBtnHeader">+ Add Source</button>
+  </div>
+</header>
+
+<div class="app-shell">
+  <nav class="nav-rail" id="navRail">
+    <button class="nav-item" data-view="dashboard"><span class="glyph">&#9635;</span>Dashboard</button>
+    <button class="nav-item" data-view="live-feed"><span class="glyph">&#9673;</span>Live Feed</button>
+    <button class="nav-item" data-view="critical"><span class="glyph">&#9888;</span>Critical</button>
+    <button class="nav-item" data-view="vulnerabilities"><span class="glyph">&#9670;</span>Vulnerabilities</button>
+    <button class="nav-item" data-view="malware"><span class="glyph">&#9737;</span>Malware</button>
+    <button class="nav-item" data-view="ransomware"><span class="glyph">&#128274;</span>Ransomware</button>
+    <button class="nav-item" data-view="threat-actors"><span class="glyph">&#9737;</span>Threat Actors</button>
+    <button class="nav-item" data-view="vendors"><span class="glyph">&#9635;</span>Vendors</button>
+    <button class="nav-item" data-view="saved"><span class="glyph">&#9733;</span>Saved</button>
+    <div class="nav-divider"></div>
+    <button class="nav-item" data-view="sources"><span class="glyph">&#9881;</span>Sources</button>
+    <button class="nav-item" data-view="analytics"><span class="glyph">&#9636;</span>Analytics</button>
+    <button class="nav-item" data-view="settings"><span class="glyph">&#9881;</span>Settings</button>
+  </nav>
+
+  <div style="min-width:0;">
+
+    <!-- DASHBOARD -->
+    <section class="view" id="view-dashboard">
+      <div class="view-head">
+        <div><h2>Dashboard</h2><div class="desc">Overview of everything Pantomath is tracking</div></div>
+      </div>
+      <div class="stat-grid" id="dashStats"></div>
+      <div class="panel-grid">
+        <div class="panel">
+          <h3>Articles — last 7 days</h3>
+          <div id="dashSparkline"></div>
+        </div>
+        <div class="panel">
+          <h3>Top vendors mentioned <span style="color:var(--text-faint); font-weight:400;">(7d)</span></h3>
+          <div id="dashVendors"></div>
+        </div>
+      </div>
+      <div class="panel-grid">
+        <div class="panel">
+          <h3>Severity distribution</h3>
+          <div id="dashSeverity"></div>
+        </div>
+        <div class="panel">
+          <h3>Top sources</h3>
+          <div id="dashTopSources"></div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <h3 style="font-family:var(--font-display); font-size:14px;">Latest intelligence</h3>
+        <button class="btn" data-goto="live-feed">View all</button>
+      </div>
+      <div class="feed" id="dashLatest"></div>
+    </section>
+
+    <!-- LIVE FEED -->
+    <section class="view" id="view-live-feed">
+      <div class="view-head">
+        <div><h2>Live Feed</h2><div class="desc">Everything, unfiltered, newest first</div></div>
+      </div>
+      <div class="toolbar">
+        <div class="search-box">
+          <span style="color:var(--text-faint)">&#8981;</span>
+          <input type="text" id="searchInput" placeholder="Filter by keyword, CVE, actor...">
+        </div>
+        <div class="sev-toggles" id="sevToggles">
+          <button class="sev-toggle active" data-sev="high">High</button>
+          <button class="sev-toggle active" data-sev="medium">Medium</button>
+          <button class="sev-toggle active" data-sev="low">Low</button>
+        </div>
+      </div>
+      <div class="feed" id="liveFeed"></div>
+    </section>
+
+    <!-- CATEGORY-FILTERED VIEWS (Critical / Vulnerabilities / Malware / Ransomware) -->
+    <section class="view" id="view-critical">
+      <div class="view-head"><div><h2>Critical</h2><div class="desc">High-severity items from the last 24 hours</div></div></div>
+      <div class="feed" id="feedCritical"></div>
+    </section>
+    <section class="view" id="view-vulnerabilities">
+      <div class="view-head"><div><h2>Vulnerabilities</h2><div class="desc">Sources tagged as vulnerability / CVE feeds</div></div></div>
+      <div class="feed" id="feedVulnerabilities"></div>
+    </section>
+    <section class="view" id="view-malware">
+      <div class="view-head"><div><h2>Malware</h2><div class="desc">Sources tagged as malware / ransomware</div></div></div>
+      <div class="feed" id="feedMalware"></div>
+    </section>
+    <section class="view" id="view-ransomware">
+      <div class="view-head"><div><h2>Ransomware</h2><div class="desc">Keyword match on "ransomware" across all sources</div></div></div>
+      <div class="feed" id="feedRansomware"></div>
+    </section>
+
+    <!-- THREAT ACTORS -->
+    <section class="view" id="view-threat-actors">
+      <div class="view-head">
+        <div><h2>Threat Actors</h2><div class="desc">Rule-based detection of named APT groups &amp; ransomware gangs — click a name to filter</div></div>
+      </div>
+      <div id="actorChips" style="margin-bottom:16px;"></div>
+      <div class="feed" id="feedActors"></div>
+    </section>
+
+    <!-- VENDORS -->
+    <section class="view" id="view-vendors">
+      <div class="view-head">
+        <div><h2>Vendors</h2><div class="desc">Products/companies mentioned in intel — click a name to filter</div></div>
+      </div>
+      <div id="vendorChips" style="margin-bottom:16px;"></div>
+      <div class="feed" id="feedVendors"></div>
+    </section>
+
+    <!-- SAVED -->
+    <section class="view" id="view-saved">
+      <div class="view-head"><div><h2>Saved</h2><div class="desc">Articles you've bookmarked</div></div></div>
+      <div class="feed" id="feedSaved"></div>
+    </section>
+
+    <!-- SOURCES -->
+    <section class="view" id="view-sources">
+      <div class="view-head">
+        <div><h2>Sources</h2><div class="desc">Add, pause, or remove RSS/Atom feeds</div></div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="exportSourcesBtn">Export</button>
+          <button class="btn" id="importSourcesBtn">Import</button>
+          <input type="file" id="importSourcesFile" accept="application/json" style="display:none;">
+          <button class="btn btn-primary" id="addSourceBtnSources">+ Add Source</button>
+        </div>
+      </div>
+      <table class="sources-table">
+        <thead><tr><th>Source</th><th>Category</th><th>Status</th><th>Interval</th><th>Last polled</th><th></th></tr></thead>
+        <tbody id="sourcesTableBody"></tbody>
+      </table>
+    </section>
+
+    <!-- ANALYTICS -->
+    <section class="view" id="view-analytics">
+      <div class="view-head"><div><h2>Analytics</h2><div class="desc">Aggregate trends across all stored intelligence</div></div></div>
+      <div class="panel-grid">
+        <div class="panel"><h3>Articles — last 7 days</h3><div id="anSparkline"></div></div>
+        <div class="panel"><h3>Severity distribution</h3><div id="anSeverity"></div></div>
+      </div>
+      <div class="panel-grid">
+        <div class="panel"><h3>Category distribution</h3><div id="anCategory"></div></div>
+        <div class="panel"><h3>Top sources (all time)</h3><div id="anTopSources"></div></div>
+      </div>
+      <div class="panel"><h3>Top vendors mentioned (7d)</h3><div id="anVendors"></div></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <div class="view-head"><div><h2>Settings</h2><div class="desc">Configuration &amp; data management</div></div></div>
+
+      <div class="settings-section">
+        <h4>Feeds</h4>
+        <div class="settings-row">
+          <div><div class="settings-label">Default poll interval for new sources</div><div class="settings-hint">Applied as the default in the Add Source form</div></div>
+          <input type="number" id="defaultInterval" value="300" min="60" style="width:90px; background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 8px; color:var(--text); font-family:var(--font-mono);">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Notifications</h4>
+        <div class="settings-row">
+          <div><div class="settings-label">Desktop notifications</div><div class="settings-hint">Uses your browser's native notification popup. Requires this tab to stay open — see note below.</div></div>
+          <div class="toggle-switch" id="notifToggle"></div>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Notify me for</div><div class="settings-hint">Minimum severity that triggers a notification</div></div>
+          <select id="notifThreshold" style="background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 10px; color:var(--text); font-family:var(--font-mono);">
+            <option value="high">Critical only (High)</option>
+            <option value="medium">High &amp; Medium</option>
+            <option value="low">Everything</option>
+          </select>
+        </div>
+        <div class="settings-row" style="border-bottom:none;">
+          <div class="settings-hint" id="notifPermissionHint" style="max-width:520px;">Browser permission: <span id="notifPermissionState">unknown</span>. Desktop notifications only fire while this dashboard tab is open in your browser — Pantomath is a web app, not a native app, so there's no background/OS-level push when the tab is closed.</div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Data</h4>
+        <div class="settings-row">
+          <div><div class="settings-label">Backup database</div><div class="settings-hint">Downloads the raw SQLite file (/var/lib/pantomath/pantomath.db)</div></div>
+          <button class="btn" id="backupBtn">Download backup</button>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Export sources</div><div class="settings-hint">Save your source list as JSON</div></div>
+          <button class="btn" id="settingsExportBtn">Export sources.json</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Appearance</h4>
+        <div class="settings-row">
+          <div><div class="settings-label">Light theme</div><div class="settings-hint">Switches the whole dashboard; also toggleable from the header</div></div>
+          <div class="toggle-switch" id="themeToggleSettings"></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3>Add feed source</h3>
+    <div class="field">
+      <label>Source type</label>
+      <input type="text" value="RSS / Atom Feed" disabled style="opacity:0.6; cursor:not-allowed;">
+      <div class="hint">v1.0 supports RSS/Atom only. More source types coming later.</div>
+    </div>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="srcName" placeholder="e.g. SANS ISC">
+    </div>
+    <div class="field">
+      <label>RSS/Atom URL</label>
+      <input type="text" id="srcUrl" placeholder="https://example.com/feed.xml">
+    </div>
+    <div class="field">
+      <label>Category</label>
+      <select id="srcCategory">
+        <option value="general">General</option>
+        <option value="government">Government / CERT</option>
+        <option value="vulnerability">Vulnerability / CVE</option>
+        <option value="news">News</option>
+        <option value="malware">Malware / Ransomware</option>
+        <option value="research">Research</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Icon URL <span style="text-transform:none;color:var(--text-faint)">(optional)</span></label>
+      <input type="text" id="srcIcon" placeholder="Leave blank to auto-detect favicon">
+      <div class="hint">We'll fetch the site's favicon automatically if left blank.</div>
+    </div>
+    <div class="field">
+      <label>Poll interval (seconds)</label>
+      <input type="number" id="srcInterval" value="300" min="60">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="cancelAdd">Cancel</button>
+      <button class="btn btn-primary" id="confirmAdd">Add source</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/components/icon.js"></script>
+<script src="/static/widgets/theme.js"></script>
+<script src="/static/widgets/notifications.js"></script>
+<script src="/static/widgets/charts.js"></script>
+<script src="/static/widgets/feed-list.js"></script>
+<script src="/static/widgets/app.js"></script>
+</body>
+</html>

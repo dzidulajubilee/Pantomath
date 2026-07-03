@@ -5,7 +5,7 @@
 #   ./build.sh all     -> both
 set -euo pipefail
 
-VERSION="${VERSION:-1.4.1}"
+VERSION="${VERSION:-1.5.1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST="$ROOT/dist"
 mkdir -p "$DIST"

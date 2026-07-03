@@ -3,6 +3,11 @@ Polls every enabled source on its own interval, through whatever
 connector its `connector_type` maps to. This file has no RSS-specific
 code in it — it only knows about BaseConnector's `update()` contract, so
 it doesn't change when new connector types are added later.
+
+Also runs the retention cleanup pass (see `_maybe_run_retention`) — off
+by default (retention_days = 0 means "keep forever"), throttled to at
+most once an hour so it's not re-scanning the whole items table on every
+20-second tick.
 """
 import asyncio
 import time
@@ -10,12 +15,15 @@ import time
 from backend.database.sqlite import get_db
 from backend.connectors.registry import get_connector
 
+RETENTION_CHECK_INTERVAL = 3600  # seconds
+
 
 class Scheduler:
     def __init__(self, broadcast_fn, check_interval: int = 20):
         self.broadcast = broadcast_fn
         self.check_interval = check_interval
         self._running = False
+        self._last_retention_check = 0
 
     async def start(self):
         self._running = True
@@ -28,6 +36,7 @@ class Scheduler:
         while self._running:
             try:
                 await self.poll_all()
+                await self._maybe_run_retention()
             except Exception as e:
                 print(f"[scheduler] error: {e}")
             await asyncio.sleep(self.check_interval)
@@ -65,3 +74,25 @@ class Scheduler:
                 (time.time(), f"error: {str(e)[:100]}", src["id"]),
             )
             await db.commit()
+
+    async def _maybe_run_retention(self):
+        now = time.time()
+        if now - self._last_retention_check < RETENTION_CHECK_INTERVAL:
+            return
+        self._last_retention_check = now
+
+        db = await get_db()
+        try:
+            cur = await db.execute("SELECT value FROM settings WHERE key = 'retention_days'")
+            row = await cur.fetchone()
+            retention_days = int(row["value"]) if row and row["value"] else 0
+            if retention_days <= 0:
+                return  # 0 = keep forever, the default — nothing to prune
+
+            cutoff = now - (retention_days * 86400)
+            cursor = await db.execute("DELETE FROM items WHERE fetched_at < ?", (cutoff,))
+            await db.commit()
+            if cursor.rowcount:
+                print(f"[scheduler] retention cleanup: removed {cursor.rowcount} item(s) older than {retention_days}d")
+        finally:
+            await db.close()

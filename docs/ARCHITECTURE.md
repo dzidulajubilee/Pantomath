@@ -108,6 +108,30 @@ configured, nothing more. `config/feeds.json` ships with an empty
 safe for scripted/fleet deployments (fill it in before building the
 package) without affecting normal installs.
 
+## History: retention, pagination, and the calendar
+
+Nothing is ever deleted automatically by default. `settings.retention_days`
+(default `0` = forever) is the only thing that prunes old items, and it's
+opt-in from Settings — the scheduler checks it at most once an hour
+(`backend/feeds/scheduler.py: _maybe_run_retention`) and just does
+nothing if it's `0`.
+
+Being direct about a real constraint here: RSS is not an archive format.
+Most feeds only ever expose their most recent 10–50 items — Pantomath
+can't retroactively pull a year of posts a source never published via
+RSS. What "keep forever" actually buys you is that everything Pantomath
+*has* seen stays on disk indefinitely, so a year of continuous running
+gives you a genuinely browsable year of history.
+
+Browsing that history is `GET /api/items` with `date_from`/`date_to`
+(day-granularity, inclusive) and `limit`/`offset` for pagination — Live
+Feed's "Load more" button just increments `offset`. `GET /api/items/range`
+reports the earliest/latest/total stored, used to bound the date pickers
+to actual data. `GET /api/items/calendar?year=&month=` backs the calendar
+widget (`frontend/widgets/calendar.js`) — a dependency-free month grid
+that dots any day with stored items; clicking a day sets `date_from` and
+`date_to` to that single day.
+
 ## UI
 
 Twelve views, matching the target navigation: Dashboard, Live Feed,

@@ -178,6 +178,7 @@ async def import_sources(payload: dict):
 @router.get("/api/items")
 async def list_items(
     limit: int = 100,
+    offset: int = 0,
     source_id: str | None = None,
     category: str | None = None,
     severity: str | None = None,
@@ -185,6 +186,8 @@ async def list_items(
     vendor: str | None = None,
     actor: str | None = None,
     bookmarked_only: bool = False,
+    date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
+    date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
 ):
     db = await get_db()
     q = """SELECT items.*, sources.name as source_name, sources.color as source_color,
@@ -207,14 +210,42 @@ async def list_items(
         conditions.append("(',' || items.actors || ',') LIKE ?"); params.append(f"%,{actor},%")
     if bookmarked_only:
         conditions.append("items.bookmarked = 1")
+    if date_from:
+        conditions.append("items.fetched_at >= ?")
+        params.append(_day_start_ts(date_from))
+    if date_to:
+        conditions.append("items.fetched_at <= ?")
+        params.append(_day_end_ts(date_to))
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
-    q += " ORDER BY items.fetched_at DESC LIMIT ?"
-    params.append(limit)
+    q += " ORDER BY items.fetched_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
     cur = await db.execute(q, params)
     rows = [_row_to_item(dict(r)) for r in await cur.fetchall()]
     await db.close()
     return rows
+
+
+def _day_start_ts(date_str: str) -> float:
+    import datetime
+    dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    return dt.timestamp()
+
+
+def _day_end_ts(date_str: str) -> float:
+    import datetime
+    dt = datetime.datetime.strptime(date_str, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(seconds=1)
+    return dt.timestamp()
+
+
+@router.get("/api/items/range")
+async def items_date_range():
+    """Earliest/latest stored item timestamps — lets the UI bound a date picker to actual data."""
+    db = await get_db()
+    cur = await db.execute("SELECT MIN(fetched_at) as earliest, MAX(fetched_at) as latest, COUNT(*) as total FROM items")
+    row = await cur.fetchone()
+    await db.close()
+    return {"earliest": row["earliest"], "latest": row["latest"], "total": row["total"]}
 
 
 @router.patch("/api/items/{item_id}/bookmark")
@@ -318,6 +349,33 @@ async def get_stats():
 @router.get("/api/backup")
 async def backup_database():
     return FileResponse(DB_PATH, filename="pantomath-backup.db", media_type="application/octet-stream")
+
+
+# ----------------------------------------------------------------- settings
+
+@router.get("/api/settings")
+async def get_settings():
+    db = await get_db()
+    cur = await db.execute("SELECT key, value FROM settings")
+    rows = {r["key"]: r["value"] for r in await cur.fetchall()}
+    await db.close()
+    return {
+        # 0 = keep forever (default). Otherwise, a number of days.
+        "retention_days": int(rows.get("retention_days", 0)),
+    }
+
+
+@router.post("/api/settings")
+async def update_settings(payload: dict):
+    db = await get_db()
+    for key, value in payload.items():
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+    await db.commit()
+    await db.close()
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------- polling

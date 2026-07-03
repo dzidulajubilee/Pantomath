@@ -42,7 +42,7 @@ const VIEW_LOADERS = {
   'saved': () => loadSimpleFeed('feedSaved', { bookmarked_only: true }, 'Nothing saved yet — click the star on any item to bookmark it.'),
   'sources': loadSourcesView,
   'analytics': loadAnalytics,
-  'settings': () => {},
+  'settings': loadSettingsView,
 };
 
 function navigateTo(view) {
@@ -96,12 +96,50 @@ async function loadDashboard() {
 
 let liveSearchTerm = '';
 let liveSeverities = new Set(['high', 'medium', 'low']);
+let liveDateFrom = '';
+let liveDateTo = '';
+let liveOffset = 0;
+let liveHasMore = true;
+const LIVE_PAGE_SIZE = 100;
 
-async function loadLiveFeed() {
-  const items = await fetchItems({ limit: 200 });
-  renderLiveFeed(items);
-  window._liveItems = items;
+async function loadLiveFeed(reset = true) {
+  if (reset) {
+    liveOffset = 0;
+    liveHasMore = true;
+    window._liveItems = [];
+  }
+  const params = { limit: LIVE_PAGE_SIZE, offset: liveOffset };
+  if (liveDateFrom) params.date_from = liveDateFrom;
+  if (liveDateTo) params.date_to = liveDateTo;
+
+  const batch = await fetchItems(params);
+  window._liveItems = reset ? batch : [...window._liveItems, ...batch];
+  liveHasMore = batch.length === LIVE_PAGE_SIZE;
+  liveOffset += batch.length;
+
+  renderLiveFeed(window._liveItems);
+  document.getElementById('loadMoreBtn').style.display = liveHasMore ? '' : 'none';
+  document.getElementById('feedEndHint').style.display = (!liveHasMore && window._liveItems.length > 0) ? '' : 'none';
+
+  if (reset) await loadDateRangeHint();
 }
+
+async function loadDateRangeHint() {
+  const range = await (await fetch('/api/items/range')).json();
+  const hintEl = document.getElementById('dateRangeHint');
+  const fromInput = document.getElementById('dateFrom');
+  const toInput = document.getElementById('dateTo');
+  if (range.earliest && range.latest) {
+    const earliestStr = new Date(range.earliest * 1000).toISOString().slice(0, 10);
+    const latestStr = new Date(range.latest * 1000).toISOString().slice(0, 10);
+    fromInput.min = earliestStr; fromInput.max = latestStr;
+    toInput.min = earliestStr; toInput.max = latestStr;
+    hintEl.textContent = `${range.total} item(s) stored, ${earliestStr} — ${latestStr}`;
+  } else {
+    hintEl.textContent = 'No items stored yet';
+  }
+}
+
 function renderLiveFeed(items) {
   let filtered = items.filter(i => liveSeverities.has(i.severity));
   if (liveSearchTerm) {
@@ -109,7 +147,7 @@ function renderLiveFeed(items) {
   }
   renderFeedCards(document.getElementById('liveFeed'), filtered, {
     emptyTitle: sources.length === 0 ? 'No sources configured' : 'No signals match current filters',
-    emptyHint: sources.length === 0 ? 'Add a threat intel RSS feed to start seeing signals here.' : 'Adjust filters, or wait for the next poll cycle.',
+    emptyHint: sources.length === 0 ? 'Add a threat intel RSS feed to start seeing signals here.' : 'Adjust filters or the date range, or wait for the next poll cycle.',
     onBookmarkChange: () => {},
   });
 }
@@ -125,6 +163,15 @@ document.querySelectorAll('.sev-toggle').forEach(btn => {
     if (window._liveItems) renderLiveFeed(window._liveItems);
   };
 });
+document.getElementById('dateFrom').addEventListener('change', (e) => { liveDateFrom = e.target.value; loadLiveFeed(true); });
+document.getElementById('dateTo').addEventListener('change', (e) => { liveDateTo = e.target.value; loadLiveFeed(true); });
+document.getElementById('dateClearBtn').onclick = () => {
+  liveDateFrom = ''; liveDateTo = '';
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value = '';
+  loadLiveFeed(true);
+};
+document.getElementById('loadMoreBtn').onclick = () => loadLiveFeed(false);
 
 // ---------------------------------------------------- simple filtered feeds
 
@@ -194,6 +241,30 @@ async function loadAnalytics() {
   renderBarChart(document.getElementById('anTopSources'), stats.top_sources.map(s => ({ label: s.name, count: s.count })));
   renderBarChart(document.getElementById('anVendors'), stats.top_vendors.map(v => ({ label: v.name, count: v.count })));
 }
+
+// -------------------------------------------------------------- settings
+
+async function loadSettingsView() {
+  const settings = await (await fetch('/api/settings')).json();
+  document.getElementById('retentionSelect').value = String(settings.retention_days);
+
+  const range = await (await fetch('/api/items/range')).json();
+  const label = document.getElementById('storedRangeLabel');
+  if (range.earliest && range.latest) {
+    const earliestStr = new Date(range.earliest * 1000).toLocaleDateString();
+    const latestStr = new Date(range.latest * 1000).toLocaleDateString();
+    label.textContent = `Currently stored: ${range.total} items, ${earliestStr} → ${latestStr}`;
+  } else {
+    label.textContent = 'Currently stored: nothing yet';
+  }
+}
+
+document.getElementById('retentionSelect').addEventListener('change', async (e) => {
+  await fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ retention_days: e.target.value }),
+  });
+});
 
 // -------------------------------------------------------------- sources view
 

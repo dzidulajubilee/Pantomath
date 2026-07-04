@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS items (
     severity TEXT DEFAULT 'low',
     vendors TEXT DEFAULT '',
     actors TEXT DEFAULT '',
+    cves TEXT DEFAULT '',
+    ips TEXT DEFAULT '',
+    hashes TEXT DEFAULT '',
+    emails TEXT DEFAULT '',
     bookmarked INTEGER DEFAULT 0,
     read INTEGER DEFAULT 0,
     UNIQUE(source_id, guid),
@@ -45,3 +49,23 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 """
+
+# Columns added after the original CREATE TABLE statements above.
+# `CREATE TABLE IF NOT EXISTS` is a no-op against an already-existing
+# table, so a column added here needs an explicit ALTER TABLE against any
+# database that predates it — that's what this list drives (see
+# pantomath/database/sqlite.py: _run_migrations). Each entry is
+# (table, column, column_definition); adding a new column later should
+# come with a new entry here, not just a change to SCHEMA above.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("sources", "icon_url", "TEXT"),
+    ("sources", "connector_type", "TEXT DEFAULT 'rss'"),
+    ("items", "severity", "TEXT DEFAULT 'low'"),
+    ("items", "vendors", "TEXT DEFAULT ''"),
+    ("items", "actors", "TEXT DEFAULT ''"),
+    ("items", "bookmarked", "INTEGER DEFAULT 0"),
+    ("items", "cves", "TEXT DEFAULT ''"),
+    ("items", "ips", "TEXT DEFAULT ''"),
+    ("items", "hashes", "TEXT DEFAULT ''"),
+    ("items", "emails", "TEXT DEFAULT ''"),
+]

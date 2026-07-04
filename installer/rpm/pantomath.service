@@ -11,7 +11,7 @@ Environment=PANTOMATH_DB=/var/lib/pantomath/pantomath.db
 Environment=PANTOMATH_PORT=7373
 Environment=PYTHONPATH=/opt/pantomath
 WorkingDirectory=/opt/pantomath
-ExecStart=/opt/pantomath/venv/bin/python3 -m uvicorn backend.app:app --host 0.0.0.0 --port ${PANTOMATH_PORT}
+ExecStart=/opt/pantomath/venv/bin/python3 -m uvicorn pantomath.app:app --host 0.0.0.0 --port ${PANTOMATH_PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

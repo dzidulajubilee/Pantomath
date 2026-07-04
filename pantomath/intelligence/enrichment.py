@@ -13,11 +13,11 @@ Two responsibilities live here:
 """
 import os
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
-from backend.feeds.parser import domain_from_url
-from backend.database.sqlite import DB_PATH
+from pantomath.database.sqlite import DB_PATH
+from pantomath.feeds.parser import domain_from_url
 
 FAVICON_SERVICE = "https://www.google.com/s2/favicons?sz=64&domain={domain}"
 ICON_CACHE_DIR = os.environ.get(

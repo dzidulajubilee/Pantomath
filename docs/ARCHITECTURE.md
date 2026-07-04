@@ -4,7 +4,7 @@
 
 ```
 Pantomath/
-├── backend/
+├── pantomath/                 # the installable Python package
 │   ├── connectors/
 │   │   ├── base.py        # BaseConnector — the extensibility contract
 │   │   ├── rss.py          # RSSConnector — the only implementation in v1.0
@@ -38,21 +38,25 @@ Pantomath/
 ├── installer/
 │   ├── deb/                # control file, postinst/prerm/postrm, systemd unit
 │   └── rpm/                # nfpm.yaml spec (builds rpm without rpmbuild) + same scripts
+├── tests/                 # pytest suite — see conftest.py for the env-var-before-import setup
+├── pyproject.toml         # package metadata, version, deps, ruff/pytest config — single source of truth
+├── Makefile               # make dev / test / lint / fmt / package
+├── CONTRIBUTING.md
 └── docs/
 ```
 
 ## Data flow
 
-1. `backend/feeds/scheduler.py` wakes every 20s, checks each enabled source's
+1. `pantomath/feeds/scheduler.py` wakes every 20s, checks each enabled source's
    `interval_seconds` against its `last_fetched` timestamp.
-2. Due sources get handed to `backend/connectors/registry.get_connector()`,
+2. Due sources get handed to `pantomath/connectors/registry.get_connector()`,
    which looks up the class for that source's `connector_type` and calls
    its `update()` — the fetch → normalize → validate → store cycle defined
    by `BaseConnector`. The scheduler itself has no RSS-specific code.
-3. `RSSConnector.fetch()` calls `backend/feeds/rss.py` (`feedparser`, run in
+3. `RSSConnector.fetch()` calls `pantomath/feeds/rss.py` (`feedparser`, run in
    a thread pool since it's blocking); `.normalize()` calls
-   `backend/feeds/parser.py` to shape entries into the common item dict;
-   `.store()` scores severity (`backend/intelligence/scoring.py`) and
+   `pantomath/feeds/parser.py` to shape entries into the common item dict;
+   `.store()` scores severity (`pantomath/intelligence/scoring.py`) and
    writes to SQLite.
 4. Newly-inserted items are broadcast to all connected browsers over
    `/ws`. The frontend prepends them with a slide-in animation.
@@ -62,20 +66,20 @@ Pantomath/
 
 ## Extensibility: the connector contract
 
-`backend/connectors/base.py` defines `BaseConnector`, an abstract class
+`pantomath/connectors/base.py` defines `BaseConnector`, an abstract class
 with five methods: `fetch()`, `normalize()`, `validate()`, `store()`, and
 `update()` (which chains the first four). `RSSConnector` is the only
 implementation shipped in v1.0.
 
 Retrieval, parsing/normalization, and storage are deliberately separate
 steps — not just separate function calls, but separate *files*
-(`backend/feeds/rss.py` vs `backend/feeds/parser.py` vs the `store()`
+(`pantomath/feeds/rss.py` vs `pantomath/feeds/parser.py` vs the `store()`
 method) — so each can change independently. A future connector for a
 different kind of source (a TAXII feed, a vendor API, anything) is added
 by:
 
-1. Implementing `BaseConnector` in a new `backend/connectors/<name>.py`.
-2. Adding one line to `CONNECTOR_REGISTRY` in `backend/connectors/registry.py`.
+1. Implementing `BaseConnector` in a new `pantomath/connectors/<name>.py`.
+2. Adding one line to `CONNECTOR_REGISTRY` in `pantomath/connectors/registry.py`.
 
 No changes to the scheduler, the database schema (the `sources` table
 already has a `connector_type` column, defaulting to `'rss'`), or the API
@@ -113,7 +117,7 @@ package) without affecting normal installs.
 Nothing is ever deleted automatically by default. `settings.retention_days`
 (default `0` = forever) is the only thing that prunes old items, and it's
 opt-in from Settings — the scheduler checks it at most once an hour
-(`backend/feeds/scheduler.py: _maybe_run_retention`) and just does
+(`pantomath/feeds/scheduler.py: _maybe_run_retention`) and just does
 nothing if it's `0`.
 
 Being direct about a real constraint here: RSS is not an archive format.
@@ -132,6 +136,85 @@ widget (`frontend/widgets/calendar.js`) — a dependency-free month grid
 that dots any day with stored items; clicking a day sets `date_from` and
 `date_to` to that single day.
 
+## Packaging & collaboration
+
+`pantomath/` is a real installable Python package now (PEP 621, via
+`pyproject.toml`) — `pip install -e .` gets you an editable install,
+`from pantomath.intelligence.scoring import score_severity` works from
+anywhere, and `pantomath.__version__` reflects whatever's actually
+installed. Version lives in exactly one place: `pyproject.toml`'s
+`[project] version`. `build.sh` reads it from there automatically, so
+there's nothing else to bump on a release.
+
+Each subpackage's `__init__.py` re-exports its public API (e.g.
+`from pantomath.connectors import BaseConnector, RSSConnector` instead of
+reaching into `pantomath.connectors.rss` directly) — except
+`pantomath/feeds/__init__.py`, which deliberately does NOT re-export
+`Scheduler`: doing so would create a real circular import
+(`feeds → connectors → feeds.parser → feeds/__init__ again`), caught by
+the test suite the first time it was tried. Import `Scheduler` directly
+from `pantomath.feeds.scheduler` instead — that one line of nuance is
+called out in the module's own docstring so it isn't rediscovered the
+hard way twice.
+
+The top-level `pantomath/__init__.py` deliberately does NOT import
+`pantomath.app` — doing so would make every `import pantomath.<anything>`
+eagerly construct the FastAPI app (mounting static files, registering
+routes) as a side effect, which is unwanted for lightweight uses like
+importing a scoring function in a script or test.
+
+`tests/conftest.py` is the one file that has to run before anything else:
+several modules read `PANTOMATH_DB`/`PANTOMATH_ICON_CACHE` as module-level
+constants at import time, so the test env vars are set at conftest
+*module-load* time, not inside a fixture — pytest guarantees conftest.py
+loads before any test module it applies to.
+
+## IOC extraction
+
+`pantomath/intelligence/ioc_extraction.py` does the same kind of
+rule-based extraction as tagging.py, for a different purpose: CVEs, IPv4
+addresses, MD5/SHA1/SHA256 hashes, and email addresses, via regex against
+each item's title+summary at store time. A few deliberate details worth
+knowing:
+- IPv4 matching validates each octet is actually 0–255 (so it doesn't
+  treat arbitrary `x.y.z.w`-shaped version numbers as IPs), and filters
+  a short list of constantly-recurring noise addresses
+  (`127.0.0.1`, `8.8.8.8`, etc.) that show up in prose as examples, not
+  as real indicators.
+- Hashes are matched longest-pattern-first (SHA256 → SHA1 → MD5) since a
+  regex word boundary can't match partway through a continuous hex run,
+  so there's no risk of a 64-char hash also registering as containing an
+  MD5.
+
+Stored as comma-separated strings on the `items` row (`cves`, `ips`,
+`hashes`, `emails`) — same pattern as `vendors`/`actors`, same tradeoff
+(simple now, easy to normalize into real join tables later if needed).
+
+`GET /api/iocs?type=&limit=` returns the top IOCs of one type with
+occurrence counts (powers the IOCs page's bar chart); `GET
+/api/iocs/summary` returns a distinct-count-per-type breakdown (powers
+the distribution donut — built with CSS `conic-gradient`, no chart
+library). `GET /api/items?ioc_type=&ioc_value=` filters articles
+containing a specific indicator — clicking any bar or chip in the IOCs
+view calls exactly this endpoint to populate the "Articles containing…"
+table below it.
+
+## Schema migrations
+
+`CREATE TABLE IF NOT EXISTS` is a no-op against an already-existing
+table — so every column added after the very first release (`icon_url`,
+`connector_type`, `severity`, `vendors`, `actors`, `bookmarked`, and now
+the four IOC columns) needed an explicit migration path, which didn't
+exist until this pass. `pantomath/database/models.py: MIGRATIONS` is the
+list of `(table, column, definition)` tuples; `pantomath/database/sqlite.py:
+_run_migrations` checks `PRAGMA table_info` and only `ALTER TABLE ADD
+COLUMN`s what's actually missing. Runs on every startup, safe to run
+against an up-to-date database (no-op) or a genuinely old one (brings it
+current, verified against a simulated pre-v1.4 database with none of
+these columns — the old row survived untouched and every expected column
+was added). Any future column addition should get an entry here, not just
+a change to `SCHEMA`.
+
 ## UI
 
 Twelve views, matching the target navigation: Dashboard, Live Feed,
@@ -149,7 +232,7 @@ different pre-filtered `/api/items` query — one card renderer, many views.
 
 ## Tagging (vendors & threat actors)
 
-`backend/intelligence/tagging.py` does rule-based keyword/pattern
+`pantomath/intelligence/tagging.py` does rule-based keyword/pattern
 matching against curated vendor and threat-actor name lists (plus a regex
 for APT/UNC/FIN/TA-style actor codenames). This is deliberately simple —
 no NLP, no LLM call, no external dependency — and is applied once, at
@@ -165,7 +248,7 @@ later without changing the tagging logic itself.
 
 Each source has an `icon_url` (auto-derived from its domain, or a custom
 URL you supply). The browser never hits that URL directly — it requests
-`GET /api/sources/{id}/icon`, and `backend/intelligence/enrichment.py`
+`GET /api/sources/{id}/icon`, and `pantomath/intelligence/enrichment.py`
 fetches it **exactly once**, caches the bytes + content-type under
 `PANTOMATH_ICON_CACHE` (defaults to an `icons/` folder next to the
 database), and every request after that is a disk read. A failed fetch is

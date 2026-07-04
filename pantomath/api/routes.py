@@ -1,13 +1,18 @@
+import asyncio
 import time
 import uuid
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.database.sqlite import get_db, DB_PATH
-from backend.intelligence.enrichment import derive_icon_url, fetch_and_cache_icon_sync, invalidate_icon_cache
-from backend.connectors.registry import available_connector_types, CONNECTOR_REGISTRY
-import asyncio
+from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
+from pantomath.database.sqlite import DB_PATH, get_db
+from pantomath.intelligence.enrichment import (
+    derive_icon_url,
+    fetch_and_cache_icon_sync,
+    invalidate_icon_cache,
+)
 
 router = APIRouter()
 active_ws: list[WebSocket] = []
@@ -28,6 +33,10 @@ async def broadcast(message: dict):
 def _row_to_item(row: dict) -> dict:
     row["vendors"] = [v for v in (row.get("vendors") or "").split(",") if v]
     row["actors"] = [a for a in (row.get("actors") or "").split(",") if a]
+    row["cves"] = [c for c in (row.get("cves") or "").split(",") if c]
+    row["ips"] = [i for i in (row.get("ips") or "").split(",") if i]
+    row["hashes"] = [h for h in (row.get("hashes") or "").split(",") if h]
+    row["emails"] = [e for e in (row.get("emails") or "").split(",") if e]
     row["bookmarked"] = bool(row.get("bookmarked"))
     return row
 
@@ -113,7 +122,7 @@ async def add_source(source: SourceIn):
         await db.commit()
     except Exception as e:
         await db.close()
-        raise HTTPException(400, f"Could not add source (maybe duplicate URL): {e}")
+        raise HTTPException(400, f"Could not add source (maybe duplicate URL): {e}") from e
     await db.close()
     await broadcast({"type": "sources_changed"})
     return {"id": sid, "icon_url": icon_url}
@@ -185,6 +194,8 @@ async def list_items(
     keyword: str | None = None,
     vendor: str | None = None,
     actor: str | None = None,
+    ioc_type: str | None = None,   # 'cve' | 'ip' | 'hash' | 'email'
+    ioc_value: str | None = None,
     bookmarked_only: bool = False,
     date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
     date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
@@ -196,18 +207,29 @@ async def list_items(
     conditions = []
     params = []
     if source_id:
-        conditions.append("items.source_id = ?"); params.append(source_id)
+        conditions.append("items.source_id = ?")
+        params.append(source_id)
     if category:
-        conditions.append("sources.category = ?"); params.append(category)
+        conditions.append("sources.category = ?")
+        params.append(category)
     if severity:
-        conditions.append("items.severity = ?"); params.append(severity)
+        conditions.append("items.severity = ?")
+        params.append(severity)
     if keyword:
         conditions.append("(items.title LIKE ? OR items.summary LIKE ?)")
         params += [f"%{keyword}%", f"%{keyword}%"]
     if vendor:
-        conditions.append("(',' || items.vendors || ',') LIKE ?"); params.append(f"%,{vendor},%")
+        conditions.append("(',' || items.vendors || ',') LIKE ?")
+        params.append(f"%,{vendor},%")
     if actor:
-        conditions.append("(',' || items.actors || ',') LIKE ?"); params.append(f"%,{actor},%")
+        conditions.append("(',' || items.actors || ',') LIKE ?")
+        params.append(f"%,{actor},%")
+    if ioc_type and ioc_value:
+        ioc_column = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}.get(ioc_type)
+        if not ioc_column:
+            raise HTTPException(400, f"Unknown ioc_type '{ioc_type}'. Use one of: cve, ip, hash, email.")
+        conditions.append(f"(',' || items.{ioc_column} || ',') LIKE ?")
+        params.append(f"%,{ioc_value},%")
     if bookmarked_only:
         conditions.append("items.bookmarked = 1")
     if date_from:
@@ -272,6 +294,44 @@ async def list_tags(type: str = "vendor", limit: int = 20):
                 counts[tag] = counts.get(tag, 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     return [{"name": name, "count": count} for name, count in ranked]
+
+
+_IOC_COLUMNS = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}
+
+
+@router.get("/api/iocs")
+async def list_iocs(type: str = "cve", limit: int = 20):
+    """Distinct IOCs of one type with occurrence counts — powers the IOCs page's bar chart and chip list."""
+    col = _IOC_COLUMNS.get(type)
+    if not col:
+        raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
+    db = await get_db()
+    cur = await db.execute(f"SELECT {col} FROM items WHERE {col} != ''")
+    rows = await cur.fetchall()
+    await db.close()
+    counts: dict[str, int] = {}
+    for row in rows:
+        for value in row[0].split(","):
+            if value:
+                counts[value] = counts.get(value, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"name": name, "count": count} for name, count in ranked]
+
+
+@router.get("/api/iocs/summary")
+async def iocs_summary():
+    """Distinct-IOC-count per type, across all stored items — powers the IOC type distribution chart."""
+    db = await get_db()
+    summary = {}
+    for ioc_type, col in _IOC_COLUMNS.items():
+        cur = await db.execute(f"SELECT {col} FROM items WHERE {col} != ''")
+        rows = await cur.fetchall()
+        distinct = set()
+        for row in rows:
+            distinct.update(v for v in row[0].split(",") if v)
+        summary[ioc_type] = len(distinct)
+    await db.close()
+    return summary
 
 
 # -------------------------------------------------------------------- stats

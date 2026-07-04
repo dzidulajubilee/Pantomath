@@ -1,10 +1,11 @@
-import aiosqlite
-import os
 import json
-import uuid
+import os
 import pathlib
+import uuid
 
-from backend.database.models import SCHEMA
+import aiosqlite
+
+from pantomath.database.models import MIGRATIONS, SCHEMA
 
 DB_PATH = os.environ.get("PANTOMATH_DB", "/var/lib/pantomath/pantomath.db")
 
@@ -24,11 +25,34 @@ async def get_db():
     return db
 
 
+async def _existing_columns(db, table: str) -> set[str]:
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    return {row["name"] for row in await cur.fetchall()}
+
+
+async def _run_migrations(db):
+    """
+    Brings an existing database up to date with columns added after its
+    original creation. Safe to run on every startup — each column is only
+    added if it's actually missing, so this is a no-op on an up-to-date
+    database and on a freshly-created one (SCHEMA already has everything).
+    """
+    tables_checked: dict[str, set[str]] = {}
+    for table, column, definition in MIGRATIONS:
+        if table not in tables_checked:
+            tables_checked[table] = await _existing_columns(db, table)
+        if column not in tables_checked[table]:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            tables_checked[table].add(column)
+    await db.commit()
+
+
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = await get_db()
     await db.executescript(SCHEMA)
     await db.commit()
+    await _run_migrations(db)
 
     # Only seed from config/feeds.json on a genuinely empty database, and only
     # if the file actually has entries. An empty/missing file means: start

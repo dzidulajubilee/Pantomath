@@ -2,7 +2,7 @@
 RSS/Atom connector — the only connector shipped in v1.0.
 
 Retrieval (feedparser) and entry-shaping live as plain functions in
-backend/feeds/ (retrieval vs. parsing stay separate files on purpose).
+pantomath/feeds/ (retrieval vs. parsing stay separate files on purpose).
 This class just implements the BaseConnector contract on top of them and
 owns the storage step, so the scheduler never has to know it's RSS
 specifically — it only ever talks to BaseConnector.
@@ -11,11 +11,12 @@ import asyncio
 import time
 import uuid
 
-from backend.connectors.base import BaseConnector
-from backend.feeds.rss import fetch_raw
-from backend.feeds.parser import normalize_entry
-from backend.intelligence.scoring import score_severity
-from backend.intelligence.tagging import extract_tags
+from pantomath.connectors.base import BaseConnector
+from pantomath.feeds.parser import normalize_entry
+from pantomath.feeds.rss import fetch_raw
+from pantomath.intelligence.ioc_extraction import extract_iocs
+from pantomath.intelligence.scoring import score_severity
+from pantomath.intelligence.tagging import extract_tags
 
 
 class RSSConnector(BaseConnector):
@@ -35,6 +36,7 @@ class RSSConnector(BaseConnector):
             item_id = str(uuid.uuid4())
             severity = score_severity(item["title"], item["summary"])
             vendors, actors = extract_tags(item["title"], item["summary"])
+            iocs = extract_iocs(item["title"], item["summary"])
 
             # INSERT OR IGNORE + rowcount is the "only new items stored"
             # guarantee: the UNIQUE(source_id, guid) constraint makes the
@@ -44,12 +46,14 @@ class RSSConnector(BaseConnector):
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO items
                    (id, source_id, title, link, summary, published, fetched_at, guid,
-                    severity, vendors, actors)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    severity, vendors, actors, cves, ips, hashes, emails)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     item_id, self.source["id"], item["title"], item["link"],
                     item["summary"], item["published"], time.time(),
                     item["guid"], severity, ",".join(vendors), ",".join(actors),
+                    ",".join(iocs["cve"]), ",".join(iocs["ip"]),
+                    ",".join(iocs["hash"]), ",".join(iocs["email"]),
                 ),
             )
             if cursor.rowcount == 0:
@@ -69,6 +73,10 @@ class RSSConnector(BaseConnector):
                 "severity": severity,
                 "vendors": vendors,
                 "actors": actors,
+                "cves": iocs["cve"],
+                "ips": iocs["ip"],
+                "hashes": iocs["hash"],
+                "emails": iocs["email"],
                 "bookmarked": False,
             })
 

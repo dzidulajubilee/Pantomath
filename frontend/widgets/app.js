@@ -39,6 +39,7 @@ const VIEW_LOADERS = {
   'ransomware': () => loadSimpleFeed('feedRansomware', { keyword: 'ransomware' }, 'No ransomware-related items yet.'),
   'threat-actors': loadThreatActors,
   'vendors': loadVendors,
+  'iocs': loadIOCsView,
   'saved': () => loadSimpleFeed('feedSaved', { bookmarked_only: true }, 'Nothing saved yet — click the star on any item to bookmark it.'),
   'sources': loadSourcesView,
   'analytics': loadAnalytics,
@@ -225,6 +226,58 @@ async function loadThreatActors() {
     chipsEl.querySelector('.tag-chip').click();
   }
   if (tags.length === 0) document.getElementById('feedActors').innerHTML = '';
+}
+
+// -------------------------------------------------------------- IOCs
+
+const IOC_TYPE_LABELS = { cve: 'CVEs', ip: 'IP Addresses', hash: 'Hashes', email: 'Emails' };
+const IOC_TYPE_COLORS = { cve: '#5eead4', ip: '#60a5fa', hash: '#a78bfa', email: '#34d399' };
+let currentIocType = 'cve';
+
+async function loadIOCsView() {
+  document.querySelectorAll('.ioc-type-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.iocType === currentIocType);
+  });
+  document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned`;
+  document.getElementById('iocArticlesPanel').style.display = 'none';
+
+  const top = await (await fetch(`/api/iocs?type=${currentIocType}&limit=10`)).json();
+  renderBarChart(document.getElementById('iocTopChart'),
+    top.map(t => ({ label: t.name, count: t.count })),
+    { colorFn: () => IOC_TYPE_COLORS[currentIocType], onClick: (value) => showIocArticles(currentIocType, value) });
+
+  const summary = await (await fetch('/api/iocs/summary')).json();
+  renderDonutChart(document.getElementById('iocDonutWrap'),
+    Object.entries(IOC_TYPE_LABELS).map(([type, label]) => ({
+      label, count: summary[type] || 0, color: IOC_TYPE_COLORS[type],
+    })),
+    { centerLabel: 'distinct IOCs' });
+}
+
+document.querySelectorAll('.ioc-type-btn').forEach(btn => {
+  btn.onclick = () => { currentIocType = btn.dataset.iocType; loadIOCsView(); };
+});
+
+async function showIocArticles(iocType, value) {
+  const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50 });
+  const panel = document.getElementById('iocArticlesPanel');
+  const tbody = document.getElementById('iocArticlesBody');
+  document.getElementById('iocArticlesTitle').textContent =
+    `Articles containing ${IOC_TYPE_LABELS[iocType].replace(/s$/, '')}: ${value} (${items.length} occurrence${items.length === 1 ? '' : 's'})`;
+
+  tbody.innerHTML = items.length === 0
+    ? `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:24px;">No articles found.</td></tr>`
+    : items.map(i => `
+        <tr>
+          <td><span class="src-tag" style="background:${i.source_color}22; color:${i.source_color}">${escapeHtml(i.source_name)}</span></td>
+          <td>${escapeHtml(i.title)}</td>
+          <td style="color:var(--text-faint); white-space:nowrap;">${new Date(i.fetched_at * 1000).toLocaleString()}</td>
+          <td style="text-align:right;"><a class="icon-btn" href="${i.link}" target="_blank" rel="noopener" title="Open original">&#8599;</a></td>
+        </tr>
+      `).join('');
+
+  panel.style.display = '';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // -------------------------------------------------------------- analytics

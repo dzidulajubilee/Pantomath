@@ -338,3 +338,38 @@ main{padding:22px 28px 60px;}
 }
 .theme-toggle:hover{ border-color:var(--signal); color:var(--signal); }
 
+
+/* IOCS VIEW */
+.ioc-type-selector{display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap;}
+.ioc-type-btn{
+  font-size:11.5px; padding:8px 16px; border-radius:7px; border:1px solid var(--line-bright);
+  background:var(--bg-panel); color:var(--text-dim); cursor:pointer; font-family:var(--font-mono);
+}
+.ioc-type-btn:hover{border-color:var(--signal); color:var(--text);}
+.ioc-type-btn.active{background:var(--signal); border-color:var(--signal); color:#04120f; font-weight:600;}
+
+.ioc-chip{
+  display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11.5px;
+  padding:6px 12px; border-radius:7px; background:var(--bg-raised); border:1px solid var(--line-bright);
+  color:var(--text); cursor:pointer; margin:0 6px 6px 0;
+}
+.ioc-chip:hover, .ioc-chip.active{border-color:var(--signal); color:var(--signal);}
+.ioc-chip .count{color:var(--text-faint); font-size:10px;}
+
+/* Donut chart via conic-gradient — no chart library needed */
+.donut-wrap{display:flex; align-items:center; gap:24px; flex-wrap:wrap;}
+.donut{
+  width:150px; height:150px; border-radius:50%; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  position:relative;
+}
+.donut::before{
+  content:''; position:absolute; inset:22px; border-radius:50%; background:var(--bg-panel);
+}
+.donut-center{position:relative; z-index:1; text-align:center;}
+.donut-center .total{font-family:var(--font-display); font-size:20px; font-weight:700; color:var(--heading);}
+.donut-center .label{font-size:9.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.06em;}
+.donut-legend{display:flex; flex-direction:column; gap:8px;}
+.donut-legend-item{display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim);}
+.donut-legend-dot{width:9px; height:9px; border-radius:50%; flex-shrink:0;}
+.donut-legend-item .val{color:var(--text); font-weight:600; margin-left:auto; padding-left:14px;}

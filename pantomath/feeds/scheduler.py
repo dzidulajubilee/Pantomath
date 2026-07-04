@@ -12,8 +12,8 @@ most once an hour so it's not re-scanning the whole items table on every
 import asyncio
 import time
 
-from backend.database.sqlite import get_db
-from backend.connectors.registry import get_connector
+from pantomath.connectors.registry import get_connector
+from pantomath.database.sqlite import get_db
 
 RETENTION_CHECK_INTERVAL = 3600  # seconds
 

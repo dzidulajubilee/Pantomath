@@ -2,8 +2,8 @@
 Normalizes a feedparser entry (whose shape varies a lot between publishers)
 into the flat dict shape the rest of the app expects.
 """
-import time
 import hashlib
+import time
 
 
 def normalize_entry(entry) -> dict:

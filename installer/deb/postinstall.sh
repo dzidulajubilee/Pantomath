@@ -15,7 +15,7 @@ if [ ! -d /opt/pantomath/venv ]; then
     python3 -m venv /opt/pantomath/venv
 fi
 /opt/pantomath/venv/bin/pip install --quiet --upgrade pip
-/opt/pantomath/venv/bin/pip install --quiet -r /opt/pantomath/requirements.txt
+/opt/pantomath/venv/bin/pip install --quiet /opt/pantomath
 
 chown -R pantomath:pantomath /opt/pantomath
 

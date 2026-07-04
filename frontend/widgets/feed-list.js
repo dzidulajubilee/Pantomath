@@ -36,6 +36,7 @@ function renderFeedCards(containerEl, items, opts) {
           </span>
           ${(i.vendors||[]).slice(0,2).map(v => `<span class="tag-chip" style="padding:2px 8px; margin:0;">${escapeHtml(v)}</span>`).join('')}
           ${(i.actors||[]).slice(0,2).map(a => `<span class="tag-chip" style="padding:2px 8px; margin:0; color:var(--red); border-color:var(--red);">${escapeHtml(a)}</span>`).join('')}
+          ${(i.cves||[]).slice(0,2).map(c => `<span class="tag-chip" style="padding:2px 8px; margin:0; color:var(--signal); border-color:var(--signal);">${escapeHtml(c)}</span>`).join('')}
           <span class="item-time">${timeAgo(i.fetched_at)}</span>
         </div>
         <div class="item-title"><a href="${i.link}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></div>

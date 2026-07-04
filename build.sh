@@ -3,10 +3,14 @@
 #   ./build.sh deb     -> dist/pantomath_<ver>_amd64.deb   (dpkg-deb, no extra tools)
 #   ./build.sh rpm     -> dist/pantomath-<ver>.x86_64.rpm  (requires nfpm)
 #   ./build.sh all     -> both
+#
+# Version comes from pyproject.toml — the single source of truth. Bump it
+# there and every package format picks it up automatically; nothing else
+# to edit.
 set -euo pipefail
 
-VERSION="${VERSION:-1.5.1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="${VERSION:-$(python3 -c "import tomllib; print(tomllib.load(open('$ROOT/pyproject.toml','rb'))['project']['version'])")}"
 DIST="$ROOT/dist"
 mkdir -p "$DIST"
 
@@ -16,10 +20,11 @@ build_deb() {
     pkgroot="$(mktemp -d)"
     mkdir -p "$pkgroot/DEBIAN" "$pkgroot/opt/pantomath" "$pkgroot/etc/systemd/system" "$pkgroot/usr/share/pixmaps"
 
-    cp -r "$ROOT/backend" "$pkgroot/opt/pantomath/"
+    cp -r "$ROOT/pantomath" "$pkgroot/opt/pantomath/"
     cp -r "$ROOT/frontend" "$pkgroot/opt/pantomath/"
     cp -r "$ROOT/config" "$pkgroot/opt/pantomath/"
-    cp "$ROOT/requirements.txt" "$pkgroot/opt/pantomath/"
+    cp "$ROOT/pyproject.toml" "$pkgroot/opt/pantomath/"
+    cp "$ROOT/README.md" "$pkgroot/opt/pantomath/"
     cp "$ROOT/installer/deb/pantomath.service" "$pkgroot/etc/systemd/system/"
     cp "$ROOT/icons/pantomath.svg" "$pkgroot/usr/share/pixmaps/pantomath.svg"
     find "$pkgroot/opt/pantomath" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true

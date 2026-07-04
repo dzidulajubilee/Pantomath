@@ -25,14 +25,16 @@ depends:
   - python3-venv
 
 contents:
-  - src: ../../backend
-    dst: /opt/pantomath/backend
+  - src: ../../pantomath
+    dst: /opt/pantomath/pantomath
   - src: ../../frontend
     dst: /opt/pantomath/frontend
   - src: ../../config
     dst: /opt/pantomath/config
-  - src: ../../requirements.txt
-    dst: /opt/pantomath/requirements.txt
+  - src: ../../pyproject.toml
+    dst: /opt/pantomath/pyproject.toml
+  - src: ../../README.md
+    dst: /opt/pantomath/README.md
   - src: ./pantomath.service
     dst: /etc/systemd/system/pantomath.service
   - src: ../../icons/pantomath.svg

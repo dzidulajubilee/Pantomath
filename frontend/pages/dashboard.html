@@ -45,6 +45,7 @@
     <button class="nav-item" data-view="ransomware"><span class="glyph">&#128274;</span>Ransomware</button>
     <button class="nav-item" data-view="threat-actors"><span class="glyph">&#9737;</span>Threat Actors</button>
     <button class="nav-item" data-view="vendors"><span class="glyph">&#9635;</span>Vendors</button>
+    <button class="nav-item" data-view="iocs"><span class="glyph">&#9673;</span>IOCs</button>
     <button class="nav-item" data-view="saved"><span class="glyph">&#9733;</span>Saved</button>
     <div class="nav-divider"></div>
     <button class="nav-item" data-view="sources"><span class="glyph">&#9881;</span>Sources</button>
@@ -154,6 +155,36 @@
       </div>
       <div id="vendorChips" style="margin-bottom:16px;"></div>
       <div class="feed" id="feedVendors"></div>
+    </section>
+
+    <!-- IOCS -->
+    <section class="view" id="view-iocs">
+      <div class="view-head">
+        <div><h2>Indicators of Compromise</h2><div class="desc">Rule-based extraction of CVEs, IPs, hashes &amp; emails from stored articles — click one to see related coverage</div></div>
+      </div>
+      <div class="ioc-type-selector" id="iocTypeSelector">
+        <button class="ioc-type-btn active" data-ioc-type="cve">CVEs</button>
+        <button class="ioc-type-btn" data-ioc-type="ip">IP Addresses</button>
+        <button class="ioc-type-btn" data-ioc-type="hash">Hashes</button>
+        <button class="ioc-type-btn" data-ioc-type="email">Emails</button>
+      </div>
+      <div class="panel-grid">
+        <div class="panel">
+          <h3 id="iocChartTitle">Top CVEs mentioned</h3>
+          <div id="iocTopChart"></div>
+        </div>
+        <div class="panel">
+          <h3>IOC type distribution</h3>
+          <div id="iocDonutWrap"></div>
+        </div>
+      </div>
+      <div class="panel" id="iocArticlesPanel" style="display:none;">
+        <h3 id="iocArticlesTitle">Articles containing —</h3>
+        <table class="sources-table">
+          <thead><tr><th>Source</th><th>Title</th><th>Date</th><th></th></tr></thead>
+          <tbody id="iocArticlesBody"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- SAVED -->

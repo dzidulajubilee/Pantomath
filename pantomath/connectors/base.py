@@ -1,12 +1,12 @@
 """
 Abstract interface every intelligence-source connector must implement.
 
-v1.0 ships exactly one connector: RSS/Atom (backend/connectors/rss.py).
+v1.0 ships exactly one connector: RSS/Atom (pantomath/connectors/rss.py).
 The interface exists so a *future* source — a TAXII feed, a vendor API
 poller, a paid intel feed, whatever — can be added later by:
 
-    1. implementing BaseConnector in a new backend/connectors/<name>.py
-    2. registering it in backend/connectors/registry.py
+    1. implementing BaseConnector in a new pantomath/connectors/<name>.py
+    2. registering it in pantomath/connectors/registry.py
 
 No changes to the scheduler, the database layer, or the API layer are
 required to add a connector. This is the boundary the "Extensibility"

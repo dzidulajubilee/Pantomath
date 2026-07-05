@@ -34,8 +34,12 @@ const VIEW_LOADERS = {
   'dashboard': loadDashboard,
   'live-feed': loadLiveFeed,
   'critical': () => loadSimpleFeed('feedCritical', { severity: 'high' }, 'No critical items right now.'),
-  'vulnerabilities': () => loadSimpleFeed('feedVulnerabilities', { category: 'vulnerability' }, 'No vulnerability-tagged sources have posted yet.'),
-  'malware': () => loadSimpleFeed('feedMalware', { category: 'malware' }, 'No malware-tagged sources have posted yet.'),
+  'vulnerabilities': () => loadMergedFeed('feedVulnerabilities',
+    { category: 'vulnerability' }, { has_cve: true },
+    'No vulnerability-tagged sources have posted, and no CVEs have been detected in any stored article yet.'),
+  'malware': () => loadMergedFeed('feedMalware',
+    { category: 'malware' }, { has_actor: true },
+    'No malware-tagged sources have posted, and no threat actors have been detected in any stored article yet.'),
   'ransomware': () => loadSimpleFeed('feedRansomware', { keyword: 'ransomware' }, 'No ransomware-related items yet.'),
   'threat-actors': loadThreatActors,
   'vendors': loadVendors,
@@ -99,30 +103,39 @@ let liveSearchTerm = '';
 let liveSeverities = new Set(['high', 'medium', 'low']);
 let liveDateFrom = '';
 let liveDateTo = '';
-let liveOffset = 0;
-let liveHasMore = true;
-const LIVE_PAGE_SIZE = 100;
+let liveCurrentPage = 1;
+const LIVE_PAGE_SIZE = 50;
+let liveSearchDebounce = null;
 
-async function loadLiveFeed(reset = true) {
-  if (reset) {
-    liveOffset = 0;
-    liveHasMore = true;
-    window._liveItems = [];
-  }
-  const params = { limit: LIVE_PAGE_SIZE, offset: liveOffset };
+function liveFilterParams() {
+  const params = {};
+  if (liveSeverities.size < 3) params.severity = [...liveSeverities].join(',');
+  if (liveSearchTerm) params.keyword = liveSearchTerm;
   if (liveDateFrom) params.date_from = liveDateFrom;
   if (liveDateTo) params.date_to = liveDateTo;
+  return params;
+}
 
-  const batch = await fetchItems(params);
-  window._liveItems = reset ? batch : [...window._liveItems, ...batch];
-  liveHasMore = batch.length === LIVE_PAGE_SIZE;
-  liveOffset += batch.length;
+async function loadLiveFeed(page = liveCurrentPage) {
+  liveCurrentPage = page;
+  const filterParams = liveFilterParams();
+  const offset = (page - 1) * LIVE_PAGE_SIZE;
 
-  renderLiveFeed(window._liveItems);
-  document.getElementById('loadMoreBtn').style.display = liveHasMore ? '' : 'none';
-  document.getElementById('feedEndHint').style.display = (!liveHasMore && window._liveItems.length > 0) ? '' : 'none';
+  const [items, countResult] = await Promise.all([
+    fetchItems({ ...filterParams, limit: LIVE_PAGE_SIZE, offset }),
+    fetch('/api/items/count?' + new URLSearchParams(filterParams)).then(r => r.json()),
+  ]);
 
-  if (reset) await loadDateRangeHint();
+  renderFeedCards(document.getElementById('liveFeed'), items, {
+    emptyTitle: sources.length === 0 ? 'No sources configured' : 'No signals match current filters',
+    emptyHint: sources.length === 0 ? 'Add a threat intel RSS feed to start seeing signals here.' : 'Adjust filters or the date range, or wait for the next poll cycle.',
+    onBookmarkChange: () => loadLiveFeed(liveCurrentPage),
+  });
+
+  const totalPages = Math.max(1, Math.ceil(countResult.total / LIVE_PAGE_SIZE));
+  renderPagination(document.getElementById('liveFeedPagination'), liveCurrentPage, totalPages, (p) => loadLiveFeed(p));
+
+  await loadDateRangeHint();
 }
 
 async function loadDateRangeHint() {
@@ -141,44 +154,55 @@ async function loadDateRangeHint() {
   }
 }
 
-function renderLiveFeed(items) {
-  let filtered = items.filter(i => liveSeverities.has(i.severity));
-  if (liveSearchTerm) {
-    filtered = filtered.filter(i => (i.title + ' ' + i.summary).toLowerCase().includes(liveSearchTerm.toLowerCase()));
-  }
-  renderFeedCards(document.getElementById('liveFeed'), filtered, {
-    emptyTitle: sources.length === 0 ? 'No sources configured' : 'No signals match current filters',
-    emptyHint: sources.length === 0 ? 'Add a threat intel RSS feed to start seeing signals here.' : 'Adjust filters or the date range, or wait for the next poll cycle.',
-    onBookmarkChange: () => {},
-  });
-}
 document.getElementById('searchInput').addEventListener('input', (e) => {
   liveSearchTerm = e.target.value;
-  if (window._liveItems) renderLiveFeed(window._liveItems);
+  clearTimeout(liveSearchDebounce);
+  liveSearchDebounce = setTimeout(() => loadLiveFeed(1), 350);
 });
 document.querySelectorAll('.sev-toggle').forEach(btn => {
   btn.onclick = () => {
     const sev = btn.dataset.sev;
     if (liveSeverities.has(sev)) { liveSeverities.delete(sev); btn.classList.remove('active'); }
     else { liveSeverities.add(sev); btn.classList.add('active'); }
-    if (window._liveItems) renderLiveFeed(window._liveItems);
+    loadLiveFeed(1);
   };
 });
-document.getElementById('dateFrom').addEventListener('change', (e) => { liveDateFrom = e.target.value; loadLiveFeed(true); });
-document.getElementById('dateTo').addEventListener('change', (e) => { liveDateTo = e.target.value; loadLiveFeed(true); });
+document.getElementById('dateFrom').addEventListener('change', (e) => { liveDateFrom = e.target.value; loadLiveFeed(1); });
+document.getElementById('dateTo').addEventListener('change', (e) => { liveDateTo = e.target.value; loadLiveFeed(1); });
 document.getElementById('dateClearBtn').onclick = () => {
   liveDateFrom = ''; liveDateTo = '';
   document.getElementById('dateFrom').value = '';
   document.getElementById('dateTo').value = '';
-  loadLiveFeed(true);
+  loadLiveFeed(1);
 };
-document.getElementById('loadMoreBtn').onclick = () => loadLiveFeed(false);
 
 // ---------------------------------------------------- simple filtered feeds
 
 async function loadSimpleFeed(containerId, params, emptyHint) {
   const items = await fetchItems({ limit: 100, ...params });
   renderFeedCards(document.getElementById(containerId), items, {
+    emptyTitle: 'Nothing here yet', emptyHint, onBookmarkChange: () => VIEW_LOADERS[currentView()]?.(),
+  });
+}
+
+/**
+ * Fetches two filter conditions separately and merges the results
+ * (dedup by id, re-sorted newest-first) — an OR across two dimensions
+ * the backend's query builder only ANDs within a single request. Used
+ * for "Vulnerabilities": a source manually tagged as a vulnerability
+ * feed is one signal, but an article actually containing an extracted
+ * CVE is a more reliable one regardless of how its source was
+ * categorized — this shows either.
+ */
+async function loadMergedFeed(containerId, paramsA, paramsB, emptyHint) {
+  const [itemsA, itemsB] = await Promise.all([
+    fetchItems({ limit: 100, ...paramsA }),
+    fetchItems({ limit: 100, ...paramsB }),
+  ]);
+  const merged = new Map();
+  for (const item of [...itemsA, ...itemsB]) merged.set(item.id, item);
+  const combined = [...merged.values()].sort((a, b) => b.fetched_at - a.fetched_at);
+  renderFeedCards(document.getElementById(containerId), combined, {
     emptyTitle: 'Nothing here yet', emptyHint, onBookmarkChange: () => VIEW_LOADERS[currentView()]?.(),
   });
 }
@@ -300,6 +324,7 @@ async function loadAnalytics() {
 async function loadSettingsView() {
   const settings = await (await fetch('/api/settings')).json();
   document.getElementById('retentionSelect').value = String(settings.retention_days);
+  document.getElementById('deepExtractionToggle').classList.toggle('on', settings.deep_extraction);
 
   const range = await (await fetch('/api/items/range')).json();
   const label = document.getElementById('storedRangeLabel');
@@ -310,6 +335,73 @@ async function loadSettingsView() {
   } else {
     label.textContent = 'Currently stored: nothing yet';
   }
+
+  await loadWebhooksTable();
+}
+
+async function loadWebhooksTable() {
+  const webhooks = await (await fetch('/api/webhooks')).json();
+  const tbody = document.getElementById('webhooksTableBody');
+  if (webhooks.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:20px;">No webhooks configured.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = webhooks.map(w => {
+    const parts = [];
+    if (w.keyword) parts.push(`keyword: ${w.keyword}`);
+    if (w.source_id) {
+      const src = sources.find(s => s.id === w.source_id);
+      parts.push(`source: ${src ? src.name : 'unknown'}`);
+    }
+    if (w.min_severity) parts.push(`severity ≥ ${w.min_severity}`);
+    const trigger = parts.length ? parts.join(', ') : 'any new item';
+    const statusOk = w.last_status && w.last_status.startsWith('ok');
+    return `
+      <tr>
+        <td>${escapeHtml(w.name)}</td>
+        <td style="color:var(--text-dim); font-size:11.5px;">${escapeHtml(trigger)}</td>
+        <td>
+          <span class="status-badge status-${w.last_status === 'pending' ? 'pending' : (statusOk ? 'ok' : 'error')}"></span>
+          ${w.enabled ? '' : '(paused) '}${escapeHtml(w.last_status || 'pending')}
+        </td>
+        <td style="text-align:right; white-space:nowrap;">
+          <button class="btn" data-action="test-webhook" data-id="${w.id}" style="padding:4px 10px; font-size:11px;">Test</button>
+          <button class="icon-btn toggle" data-action="toggle-webhook" data-id="${w.id}" data-enabled="${w.enabled}" title="${w.enabled ? 'Pause' : 'Resume'}">${w.enabled ? '⏸' : '▶'}</button>
+          <button class="icon-btn" data-action="delete-webhook" data-id="${w.id}" title="Remove">✕</button>
+        </td>
+      </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('[data-action="test-webhook"]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.textContent = 'Sending...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/webhooks/${btn.dataset.id}/test`, { method: 'POST' });
+        const result = await res.json();
+        alert(res.ok ? `Test delivered: ${result.status}` : `Delivery failed: ${result.detail}`);
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      }
+      btn.textContent = 'Test';
+      btn.disabled = false;
+      await loadWebhooksTable();
+    };
+  });
+  tbody.querySelectorAll('[data-action="toggle-webhook"]').forEach(btn => {
+    btn.onclick = async () => {
+      await fetch(`/api/webhooks/${btn.dataset.id}?enabled=${btn.dataset.enabled !== 'true'}`, { method: 'PATCH' });
+      await loadWebhooksTable();
+    };
+  });
+  tbody.querySelectorAll('[data-action="delete-webhook"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (confirm('Remove this webhook?')) {
+        await fetch(`/api/webhooks/${btn.dataset.id}`, { method: 'DELETE' });
+        await loadWebhooksTable();
+      }
+    };
+  });
 }
 
 document.getElementById('retentionSelect').addEventListener('change', async (e) => {
@@ -318,6 +410,15 @@ document.getElementById('retentionSelect').addEventListener('change', async (e) 
     body: JSON.stringify({ retention_days: e.target.value }),
   });
 });
+
+document.getElementById('deepExtractionToggle').onclick = async function () {
+  const enabling = !this.classList.contains('on');
+  this.classList.toggle('on', enabling);
+  await fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deep_extraction: enabling ? '1' : '0' }),
+  });
+};
 
 // -------------------------------------------------------------- sources view
 
@@ -394,7 +495,53 @@ document.getElementById('importSourcesFile').addEventListener('change', async (e
   e.target.value = '';
 });
 
+document.getElementById('refreshAllBtn').onclick = async () => {
+  const btn = document.getElementById('refreshAllBtn');
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Refreshing...';
+  try {
+    const res = await fetch('/api/sources/poll-all', { method: 'POST' });
+    const result = await res.json();
+    await loadSourcesView();
+    if (res.ok) {
+      alert(`Refreshed ${result.sources_polled} source(s). New items (if any) will appear shortly.`);
+    } else {
+      alert('Refresh failed: ' + (result.detail || 'unknown error'));
+    }
+  } catch (e) {
+    alert('Request failed: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = original;
+};
+
 document.getElementById('backupBtn').onclick = () => { window.location.href = '/api/backup'; };
+
+document.getElementById('reprocessBtn').onclick = async () => {
+  const btn = document.getElementById('reprocessBtn');
+  const resultEl = document.getElementById('reprocessResult');
+  if (!confirm('Re-run severity/vendor/threat-actor/IOC detection against every stored item? This can take a while and does not re-fetch RSS feeds.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Reprocessing...';
+  resultEl.textContent = 'Working — this can take a few minutes with deep extraction on a large history.';
+  try {
+    const res = await fetch('/api/reprocess', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    const result = await res.json();
+    if (res.ok) {
+      resultEl.textContent = `Done — reprocessed ${result.processed} item(s) across ${result.sources} source(s).`;
+      loadDashboard?.();
+    } else {
+      resultEl.textContent = `Failed: ${result.detail || 'unknown error'}`;
+    }
+  } catch (e) {
+    resultEl.textContent = 'Request failed: ' + e.message;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Reprocess all';
+};
 
 // -------------------------------------------------------------- add-source modal
 
@@ -434,6 +581,46 @@ document.getElementById('srcInterval').addEventListener('focus', function () {
   const d = document.getElementById('defaultInterval');
   if (d && d.value) this.value = d.value;
 }, { once: false });
+
+// -------------------------------------------------------------- add-webhook modal
+
+const webhookModal = document.getElementById('webhookModalOverlay');
+function openWebhookModal() {
+  const select = document.getElementById('whSource');
+  select.innerHTML = '<option value="">Any source</option>' +
+    sources.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+  webhookModal.classList.add('open');
+}
+function closeWebhookModal() { webhookModal.classList.remove('open'); }
+document.getElementById('addWebhookBtn').onclick = openWebhookModal;
+document.getElementById('cancelAddWebhook').onclick = closeWebhookModal;
+webhookModal.onclick = (e) => { if (e.target === webhookModal) closeWebhookModal(); };
+
+document.getElementById('confirmAddWebhook').onclick = async () => {
+  const name = document.getElementById('whName').value.trim();
+  const url = document.getElementById('whUrl').value.trim();
+  const keyword = document.getElementById('whKeyword').value.trim();
+  const source_id = document.getElementById('whSource').value;
+  const min_severity = document.getElementById('whMinSeverity').value;
+  if (!name || !url) { alert('Name and webhook URL are required'); return; }
+
+  const res = await fetch('/api/webhooks', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, url, keyword, source_id, min_severity }),
+  });
+  if (res.ok) {
+    document.getElementById('whName').value = '';
+    document.getElementById('whUrl').value = '';
+    document.getElementById('whKeyword').value = '';
+    document.getElementById('whSource').value = '';
+    document.getElementById('whMinSeverity').value = '';
+    closeWebhookModal();
+    await loadWebhooksTable();
+  } else {
+    const err = await res.json();
+    alert('Failed: ' + (err.detail || 'unknown error'));
+  }
+};
 
 // -------------------------------------------------------------- websocket
 

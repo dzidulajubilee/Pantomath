@@ -215,6 +215,166 @@ these columns — the old row survived untouched and every expected column
 was added). Any future column addition should get an entry here, not just
 a change to `SCHEMA`.
 
+## Deep extraction: fetching full articles for richer IOC/tag signal
+
+RSS summaries are short teasers — real IOCs (C2 IPs, hashes, full CVE
+lists) usually live in the article body on the publisher's site, not in
+the feed's excerpt. `pantomath/feeds/article_fetcher.py` fetches the full
+page for each genuinely-new item and strips it to plain text (a small
+`HTMLParser` subclass, skipping `<script>`/`<style>`/`<nav>`/`<footer>`
+content — no HTML-parsing library dependency). That richer text feeds
+severity scoring, tagging, and IOC extraction; the stored/displayed
+summary stays the original RSS teaser.
+
+A few things worth knowing:
+- **Toggleable in Settings** (`deep_extraction`, on by default) — since
+  it means Pantomath fetches every new article's page, which is slower
+  and means more outbound requests than summary-only extraction.
+- **Filters to genuinely-new items before fetching anything.**
+  feedparser re-returns the same ~50 recent entries on every poll
+  regardless of dedup state — without checking the database for
+  already-stored guids first, every poll cycle would re-fetch and
+  re-parse the full page for every already-stored article, forever.
+  `RSSConnector.store()` does this filter before any network call.
+- **Bounded concurrency** (5 at a time) so fetching many new items at
+  once (e.g. adding a source for the first time) doesn't serialize into
+  a very slow first poll, without hammering a single host either.
+- **Silent, total failure tolerance.** Paywalls, bot-blocking, timeouts,
+  non-HTML responses — anything — just falls back to summary-only
+  extraction for that item. Never blocks storing it, never raises.
+
+Verified end-to-end (not just unit-tested): a test article with a CVE,
+hash, and email present ONLY in the full body (not the summary) is
+correctly detected when deep extraction is on, and correctly NOT detected
+when it's off — see `tests/test_rss_connector.py`.
+
+## Webhook alerting
+
+`pantomath/alerts/` — `matcher.py` decides whether a new item matches a
+webhook's conditions (keyword, specific source, minimum severity; any
+unset condition means "any", and a rule with everything unset matches
+every new item), `dispatcher.py` sends the actual HTTP POST (`urllib` in
+a thread executor, same pattern as icon fetching — no async HTTP client
+dependency for this volume). Called from the scheduler right after
+`broadcast()` for the same new items, so WebSocket push and webhook
+delivery see identical data.
+
+Payload has a top-level `"text"` summary (so Slack/Discord/Mattermost-style
+"post a message" webhooks show something reasonable with zero
+configuration) plus a structured `"pantomath"` object for custom
+consumers. Full native formatting for a specific service (Slack blocks,
+Discord embeds) would need a small transform in front of this — out of
+scope here, noted as an honest limitation rather than half-implemented.
+
+`POST /api/webhooks/{id}/test` sends a synthetic payload immediately, so
+you can verify a webhook works without waiting for a real matching item —
+verified in tests against a real local HTTP server (not mocked), and
+separately verified against the actual `scheduler.poll_source()` code
+path end-to-end: a real feed poll, keyword-matched, delivered over real
+HTTP, payload content confirmed on the receiving end.
+
+## Fonts and icons: fully local, no CDN dependency
+
+Both UI fonts (IBM Plex Mono, Space Grotesk) and all sidebar icons are
+bundled under `frontend/assets/fonts/` and `frontend/assets/icons/nav/` —
+fetched once from their open-source GitHub repos, not loaded from Google
+Fonts or any icon CDN. This matters for a self-hosted security tool:
+works fully offline/air-gapped, and doesn't leak "someone opened
+Pantomath" to a third party on every page load. Both fonts are SIL OFL
+1.1 licensed (license files included alongside them); icons are Lucide
+(ISC licensed, license included). Space Grotesk ships as a single
+variable-weight WOFF2 (one file covers the whole 300–700 weight range
+instead of one file per weight); IBM Plex Mono ships as three static
+WOFF2 weights (400/500/600) since that's what's actually used.
+
+Sidebar icons are applied via CSS `mask-image` + `background-color:
+currentColor` rather than `<img src="...">` — an `<img>`-loaded SVG
+can't be recolored by the page's CSS (it's rendered as an opaque
+resource, not part of the current-color inheritance chain), which would
+have made hover/active color states impossible. The mask approach treats
+each SVG as a stencil and lets `background-color` supply the actual
+color, so icons correctly follow `.nav-item`'s existing hover/active
+theme-aware colors for free.
+
+## Content-aware filtering vs. source-category filtering
+
+A real reported bug: the Vulnerabilities page originally only showed
+items from sources manually categorized as `"vulnerability"` when added.
+If you added a general news source (CyberScoop, Krebs, etc.) under
+`"news"`, its CVE-laden articles were invisible there even though CVEs
+were clearly being extracted and shown elsewhere (Dashboard, IOCs page).
+Source category is a one-time manual choice at add-source time and
+easy to get "wrong" for this purpose; an article actually containing a
+detected CVE is a more reliable, content-based signal.
+
+Fixed with a `has_cve=true` filter (`items.cves != ''`) on `GET
+/api/items`, and the frontend's Vulnerabilities loader now merges two
+queries — `category=vulnerability` OR `has_cve=true` — deduping by id
+and re-sorting (`loadMergedFeed()` in `frontend/widgets/app.js`), since
+the backend's query builder only ANDs conditions within one request.
+Regression-tested directly against the reported scenario: a `"news"`-
+categorized source with a CVE-bearing item is invisible to the old
+`category=vulnerability` query and correctly found by `has_cve=true`
+(`tests/test_api_integration.py`).
+
+## Reprocessing: backfilling data for items stored before a feature existed
+
+A schema migration adding a column (`MIGRATIONS` in
+`pantomath/database/models.py`) only gives it an empty default — it never
+retroactively computes real values for rows that predate the feature. An
+install running since before IOC extraction or tagging shipped will have
+items with genuinely empty `vendors`/`actors`/`cves`/etc., not because
+nothing was there to find, but because detection didn't exist yet when
+they were stored.
+
+`pantomath/intelligence/reprocessor.py: reprocess_items()` re-runs
+severity scoring, tagging, and IOC extraction against items already on
+disk — no RSS re-fetch, using the exact same extraction logic (and
+optionally the same deep-extraction full-article fetch) that new items
+get. `POST /api/reprocess` exposes it (global or scoped to one source via
+`source_id`); Settings has a "Reprocess all" button. This is the actual
+fix for "Vulnerabilities/Malware/IOCs show nothing despite obviously
+having CVE-tagged content elsewhere" — that's old data that predates the
+feature, not a bug in the feature itself, and reprocessing is how you
+backfill it without waiting for those old articles' feeds to naturally
+cycle through fresh polls (which likely won't happen — RSS feeds don't
+re-serve old entries).
+
+`POST /api/sources/poll-all` complements this: an on-demand "refresh
+every source right now" rather than waiting for each source's scheduled
+interval, using the same fetch → normalize → validate → store pipeline
+(and therefore the same dedup guarantee) as a normal poll.
+
+## Cache-busting for the frontend shell
+
+`GET /` no longer serves `dashboard.html` as a static file — it reads the
+file, substitutes a `{{CACHEBUST}}` token in every CSS/JS reference with
+the installed package version (`pantomath.__version__`), and returns it
+as a rendered response (`pantomath/app.py: dashboard()`). Without this, a
+browser that cached `pantomath.css` or `app.js` from a previous release
+can keep serving that stale copy indefinitely after an upgrade, since the
+URL never changes — there's nothing to tell the browser a newer version
+exists. This was very likely the actual explanation for a real report of
+"icons not displaying" shortly after an upgrade: correct new HTML paired
+with a stale cached CSS file that predated the icon rules.
+
+## Server-side pagination
+
+Live Feed's severity/keyword filters moved from client-side (filtering an
+already-fetched batch) to fully server-side, because that's a
+prerequisite for accurate page counts — a "page 3 of 708" number is
+meaningless if the actual displayed content is then further filtered
+client-side afterward. `GET /api/items/count` mirrors every filter `GET
+/api/items` accepts (both go through the same
+`_build_item_conditions()` in `pantomath/api/routes.py`, so they can
+never silently drift out of sync with each other) and returns a total,
+which the frontend uses to compute page count. `severity` now accepts a
+comma-separated list (`"high,medium"`) for the multi-select toggle,
+translating to a SQL `IN (...)` clause instead of a single equality
+match. `frontend/widgets/pagination.js` renders the numbered
+first/prev/…/next/last control — dependency-free, consistent with the
+rest of the app's charts/calendar-style widgets.
+
 ## UI
 
 Twelve views, matching the target navigation: Dashboard, Live Feed,

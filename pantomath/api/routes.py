@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
 from pantomath.database.sqlite import DB_PATH, get_db
 from pantomath.intelligence.enrichment import (
@@ -13,6 +14,7 @@ from pantomath.intelligence.enrichment import (
     fetch_and_cache_icon_sync,
     invalidate_icon_cache,
 )
+from pantomath.intelligence.reprocessor import reprocess_items
 
 router = APIRouter()
 active_ws: list[WebSocket] = []
@@ -184,26 +186,17 @@ async def import_sources(payload: dict):
 
 # -------------------------------------------------------------------- items
 
-@router.get("/api/items")
-async def list_items(
-    limit: int = 100,
-    offset: int = 0,
-    source_id: str | None = None,
-    category: str | None = None,
-    severity: str | None = None,
-    keyword: str | None = None,
-    vendor: str | None = None,
-    actor: str | None = None,
-    ioc_type: str | None = None,   # 'cve' | 'ip' | 'hash' | 'email'
-    ioc_value: str | None = None,
-    bookmarked_only: bool = False,
-    date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
-    date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
+def _build_item_conditions(
+    source_id=None, category=None, severity=None, keyword=None, vendor=None, actor=None,
+    ioc_type=None, ioc_value=None, has_cve=False, has_actor=False, bookmarked_only=False,
+    date_from=None, date_to=None,
 ):
-    db = await get_db()
-    q = """SELECT items.*, sources.name as source_name, sources.color as source_color,
-                  sources.icon_url as source_icon, sources.category as category
-           FROM items JOIN sources ON items.source_id = sources.id"""
+    """
+    Shared WHERE-condition builder for GET /api/items and GET
+    /api/items/count — kept in one place so the two can never drift out
+    of sync (an accurate total is meaningless if it's computed with
+    different filter logic than the page of results it's counting).
+    """
     conditions = []
     params = []
     if source_id:
@@ -213,8 +206,13 @@ async def list_items(
         conditions.append("sources.category = ?")
         params.append(category)
     if severity:
-        conditions.append("items.severity = ?")
-        params.append(severity)
+        # comma-separated for multi-select (e.g. "high,medium"); a single
+        # value works the same as before via a one-element IN clause.
+        values = [s.strip() for s in severity.split(",") if s.strip()]
+        if values:
+            placeholders = ",".join("?" * len(values))
+            conditions.append(f"items.severity IN ({placeholders})")
+            params += values
     if keyword:
         conditions.append("(items.title LIKE ? OR items.summary LIKE ?)")
         params += [f"%{keyword}%", f"%{keyword}%"]
@@ -230,6 +228,10 @@ async def list_items(
             raise HTTPException(400, f"Unknown ioc_type '{ioc_type}'. Use one of: cve, ip, hash, email.")
         conditions.append(f"(',' || items.{ioc_column} || ',') LIKE ?")
         params.append(f"%,{ioc_value},%")
+    if has_cve:
+        conditions.append("items.cves != ''")
+    if has_actor:
+        conditions.append("items.actors != ''")
     if bookmarked_only:
         conditions.append("items.bookmarked = 1")
     if date_from:
@@ -238,6 +240,35 @@ async def list_items(
     if date_to:
         conditions.append("items.fetched_at <= ?")
         params.append(_day_end_ts(date_to))
+    return conditions, params
+
+
+@router.get("/api/items")
+async def list_items(
+    limit: int = 100,
+    offset: int = 0,
+    source_id: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,  # single value, or comma-separated for multiple (e.g. "high,medium")
+    keyword: str | None = None,
+    vendor: str | None = None,
+    actor: str | None = None,
+    ioc_type: str | None = None,   # 'cve' | 'ip' | 'hash' | 'email'
+    ioc_value: str | None = None,
+    has_cve: bool = False,  # items with at least one extracted CVE, regardless of source category
+    has_actor: bool = False,  # items with at least one detected threat actor (ransomware gang/APT group)
+    bookmarked_only: bool = False,
+    date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
+    date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
+):
+    db = await get_db()
+    q = """SELECT items.*, sources.name as source_name, sources.color as source_color,
+                  sources.icon_url as source_icon, sources.category as category
+           FROM items JOIN sources ON items.source_id = sources.id"""
+    conditions, params = _build_item_conditions(
+        source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
+        has_cve, has_actor, bookmarked_only, date_from, date_to,
+    )
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
     q += " ORDER BY items.fetched_at DESC LIMIT ? OFFSET ?"
@@ -246,6 +277,37 @@ async def list_items(
     rows = [_row_to_item(dict(r)) for r in await cur.fetchall()]
     await db.close()
     return rows
+
+
+@router.get("/api/items/count")
+async def count_items(
+    source_id: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,
+    keyword: str | None = None,
+    vendor: str | None = None,
+    actor: str | None = None,
+    ioc_type: str | None = None,
+    ioc_value: str | None = None,
+    has_cve: bool = False,
+    has_actor: bool = False,
+    bookmarked_only: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    """Total matching items for the same filters GET /api/items accepts — powers numbered pagination."""
+    db = await get_db()
+    q = "SELECT COUNT(*) as total FROM items JOIN sources ON items.source_id = sources.id"
+    conditions, params = _build_item_conditions(
+        source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
+        has_cve, has_actor, bookmarked_only, date_from, date_to,
+    )
+    if conditions:
+        q += " WHERE " + " AND ".join(conditions)
+    cur = await db.execute(q, params)
+    row = await cur.fetchone()
+    await db.close()
+    return {"total": row["total"]}
 
 
 def _day_start_ts(date_str: str) -> float:
@@ -422,6 +484,10 @@ async def get_settings():
     return {
         # 0 = keep forever (default). Otherwise, a number of days.
         "retention_days": int(rows.get("retention_days", 0)),
+        # Whether new items get their full article page fetched for
+        # richer severity/tag/IOC extraction. Default on — see
+        # pantomath/connectors/rss.py:_deep_extraction_enabled.
+        "deep_extraction": rows.get("deep_extraction", "1") != "0",
     }
 
 
@@ -438,6 +504,93 @@ async def update_settings(payload: dict):
     return {"ok": True}
 
 
+# ----------------------------------------------------------------- webhooks
+
+class WebhookIn(BaseModel):
+    name: str
+    url: str
+    keyword: str = ""
+    source_id: str = ""
+    min_severity: str = ""
+    enabled: bool = True
+
+
+@router.get("/api/webhooks")
+async def list_webhooks():
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks ORDER BY name")
+    rows = [dict(r) for r in await cur.fetchall()]
+    await db.close()
+    return rows
+
+
+@router.post("/api/webhooks")
+async def add_webhook(webhook: WebhookIn):
+    if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+    db = await get_db()
+    wid = str(uuid.uuid4())
+    await db.execute(
+        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled)
+           VALUES (?,?,?,?,?,?,?)""",
+        (wid, webhook.name, webhook.url, webhook.keyword, webhook.source_id,
+         webhook.min_severity, int(webhook.enabled)),
+    )
+    await db.commit()
+    await db.close()
+    return {"id": wid}
+
+
+@router.patch("/api/webhooks/{webhook_id}")
+async def update_webhook(webhook_id: str, enabled: bool):
+    db = await get_db()
+    await db.execute("UPDATE webhooks SET enabled = ? WHERE id = ?", (int(enabled), webhook_id))
+    await db.commit()
+    await db.close()
+    return {"ok": True}
+
+
+@router.delete("/api/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str):
+    db = await get_db()
+    await db.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+    await db.commit()
+    await db.close()
+    return {"ok": True}
+
+
+@router.post("/api/webhooks/{webhook_id}/test")
+async def test_webhook(webhook_id: str):
+    """Sends a synthetic test payload immediately, so you can verify a webhook works without waiting for a real match."""
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    webhook = await cur.fetchone()
+    if not webhook:
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+    webhook = dict(webhook)
+
+    test_item = {
+        "id": "test", "title": "Pantomath test alert",
+        "summary": "This is a test payload sent from the Settings page — if you're seeing this, the webhook is working.",
+        "link": "", "severity": "high", "source_id": "", "source_name": "Pantomath",
+        "category": "general", "vendors": [], "actors": [], "cves": [],
+    }
+    payload = build_payload(test_item, webhook)
+    loop = asyncio.get_event_loop()
+    ok, status = await loop.run_in_executor(None, send_webhook_sync, webhook["url"], payload)
+
+    await db.execute(
+        "UPDATE webhooks SET last_triggered = ?, last_status = ? WHERE id = ?",
+        (time.time(), status, webhook_id),
+    )
+    await db.commit()
+    await db.close()
+    if not ok:
+        raise HTTPException(502, f"Webhook delivery failed: {status}")
+    return {"ok": True, "status": status}
+
+
 # ----------------------------------------------------------------- polling
 
 def make_poll_now_route(scheduler):
@@ -452,7 +605,54 @@ def make_poll_now_route(scheduler):
         await scheduler.poll_source(db, dict(src))
         await db.close()
         return {"ok": True}
+
+    @router.post("/api/sources/poll-all")
+    async def poll_all_now():
+        """
+        Refreshes every enabled source immediately, bypassing each
+        source's normal interval throttle — an on-demand "refresh now"
+        rather than waiting for the next scheduled tick. Same
+        fetch -> normalize -> validate -> store pipeline as a normal
+        poll; the UNIQUE(source_id, guid) constraint means this is safe
+        to run as often as you like — it only ever adds genuinely new
+        items, never duplicates.
+        """
+        db = await get_db()
+        cur = await db.execute("SELECT * FROM sources WHERE enabled = 1")
+        sources = [dict(r) for r in await cur.fetchall()]
+        for src in sources:
+            await scheduler.poll_source(db, src)
+        await db.close()
+        return {"ok": True, "sources_polled": len(sources)}
+
     return poll_now
+
+
+# ------------------------------------------------------------- reprocessing
+
+class ReprocessIn(BaseModel):
+    source_id: str | None = None
+    deep_extraction: bool | None = None  # None = respect the current Settings toggle
+
+
+@router.post("/api/reprocess")
+async def reprocess(payload: ReprocessIn | None = None):
+    """
+    Re-runs severity/tagging/IOC extraction against items already on
+    disk — no RSS re-fetch, no network call to the source at all (only
+    to each item's own article page, if deep extraction is used). This
+    is what actually backfills vendors/actors/CVEs/etc. for items stored
+    before those extraction features existed; adding a database column
+    with a migration never retroactively computes values for old rows.
+    Can take a while on a large history with deep extraction on — it's a
+    foreground request deliberately (so the caller gets a real
+    processed/sources count back), not fired into the background.
+    """
+    payload = payload or ReprocessIn()
+    db = await get_db()
+    result = await reprocess_items(db, payload.source_id, payload.deep_extraction)
+    await db.close()
+    return result
 
 
 @router.websocket("/ws")

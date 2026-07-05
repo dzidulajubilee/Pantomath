@@ -83,3 +83,118 @@ def test_iocs_endpoint_rejects_unknown_type():
 def test_items_ioc_filter_rejects_unknown_type():
     resp = client.get("/api/items?ioc_type=bogus&ioc_value=x")
     assert resp.status_code == 400
+
+
+async def test_has_cve_filter_finds_cve_bearing_items_regardless_of_source_category():
+    """
+    Regression test for a real reported bug: a source categorized as
+    'news' (not 'vulnerability') that posts an article containing a CVE
+    was invisible on the Vulnerabilities page, since that page only
+    filtered by the source's manually-assigned category. has_cve=true
+    finds it by content instead.
+    """
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO sources (id, name, url, category) VALUES ('s1', 'News Source', 'http://x.com/feed', 'news')"
+    )
+    await db.execute(
+        """INSERT INTO items (id, source_id, title, guid, fetched_at, cves)
+           VALUES ('i1', 's1', 'Cisco patches flaw', 'g1', 1000, 'CVE-2026-12345')"""
+    )
+    await db.commit()
+    await db.close()
+
+    # Old behavior: filtering by category=vulnerability finds nothing (the bug)
+    resp = client.get("/api/items?category=vulnerability")
+    assert resp.json() == []
+
+    # Fixed behavior: has_cve=true finds it regardless of source category
+    resp = client.get("/api/items?has_cve=true")
+    results = resp.json()
+    assert len(results) == 1
+    assert results[0]["cves"] == ["CVE-2026-12345"]
+
+
+async def test_has_actor_filter_finds_actor_bearing_items_regardless_of_source_category():
+    """Same fix, applied to Malware: a detected threat actor is a content signal, not a source-category one."""
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO sources (id, name, url, category) VALUES ('s2', 'General News', 'http://y.com/feed', 'news')"
+    )
+    await db.execute(
+        """INSERT INTO items (id, source_id, title, guid, fetched_at, actors)
+           VALUES ('i2', 's2', 'LockBit strikes again', 'g2', 1000, 'LockBit')"""
+    )
+    await db.commit()
+    await db.close()
+
+    resp = client.get("/api/items?category=malware")
+    assert resp.json() == []
+    resp = client.get("/api/items?has_actor=true")
+    results = resp.json()
+    assert len(results) == 1
+    assert results[0]["actors"] == ["LockBit"]
+
+
+async def test_reprocess_endpoint_backfills_legacy_item_via_api():
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO sources (id, name, url, category) VALUES ('s3', 'Legacy', 'http://z.com/feed', 'news')"
+    )
+    await db.execute(
+        """INSERT INTO items (id, source_id, title, summary, guid, fetched_at, cves, vendors, actors)
+           VALUES ('i3', 's3', 'Microsoft flaw exploited by LockBit', 'CVE-2026-77777 details', 'g3', 1000, '', '', '')"""
+    )
+    await db.commit()
+    await db.close()
+
+    resp = client.post("/api/reprocess", json={"deep_extraction": False})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["processed"] == 1
+
+    items = client.get("/api/items").json()
+    assert "CVE-2026-77777" in items[0]["cves"]
+    assert "Microsoft" in items[0]["vendors"]
+    assert "LockBit" in items[0]["actors"]
+
+
+def test_poll_all_endpoint_reports_source_count():
+    resp = client.post("/api/sources/poll-all")
+    assert resp.status_code == 200
+    assert resp.json()["sources_polled"] == 0  # no sources configured in this clean test db
+
+
+async def test_items_count_matches_items_list_length_for_same_filters():
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    await db.execute("INSERT INTO sources (id, name, url, category) VALUES ('sc1', 'S', 'http://c.com/f', 'news')")
+    for i in range(5):
+        await db.execute(
+            "INSERT INTO items (id, source_id, title, guid, fetched_at, severity) VALUES (?,?,?,?,?,?)",
+            (f"c{i}", "sc1", f"Item {i}", f"g{i}", 1000 + i, "high" if i % 2 == 0 else "low"),
+        )
+    await db.commit()
+    await db.close()
+
+    count_resp = client.get("/api/items/count")
+    assert count_resp.json()["total"] == 5
+
+    count_high = client.get("/api/items/count?severity=high")
+    list_high = client.get("/api/items?severity=high&limit=100")
+    assert count_high.json()["total"] == len(list_high.json())
+    assert count_high.json()["total"] == 3
+
+
+def test_severity_filter_accepts_comma_separated_multiple_values():
+    resp = client.get("/api/items?severity=high,medium")
+    assert resp.status_code == 200
+    count_resp = client.get("/api/items/count?severity=high,medium")
+    assert count_resp.status_code == 200

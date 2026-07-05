@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    keyword TEXT DEFAULT '',       -- comma-separated, OR-matched against title+summary; empty = any
+    source_id TEXT DEFAULT '',     -- specific source to restrict to; empty = any source
+    min_severity TEXT DEFAULT '',  -- 'low'/'medium'/'high'; empty = any severity
+    created_at REAL DEFAULT (strftime('%s','now')),
+    last_triggered REAL DEFAULT 0,
+    last_status TEXT DEFAULT 'pending'
+);
 """
 
 # Columns added after the original CREATE TABLE statements above.

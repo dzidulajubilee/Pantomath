@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pantomath"
-version = "1.7.0"
+version = "1.10.0"
 description = "Threat intelligence RSS feed aggregator dashboard"
 readme = "README.md"
 license = { text = "MIT" }

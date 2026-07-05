@@ -12,6 +12,7 @@ most once an hour so it's not re-scanning the whole items table on every
 import asyncio
 import time
 
+from pantomath.alerts.dispatcher import dispatch_webhooks_for_items
 from pantomath.connectors.registry import get_connector
 from pantomath.database.sqlite import get_db
 
@@ -67,6 +68,7 @@ class Scheduler:
 
             if new_items:
                 await self.broadcast({"type": "new_items", "items": new_items})
+                await dispatch_webhooks_for_items(db, new_items)
 
         except Exception as e:
             await db.execute(

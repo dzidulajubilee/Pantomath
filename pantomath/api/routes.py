@@ -141,11 +141,64 @@ async def delete_source(source_id: str):
     return {"ok": True}
 
 
+class SourceEditIn(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    category: str | None = None
+    color: str | None = None
+    icon_url: str | None = None
+    connector_type: str | None = None
+    interval_seconds: int | None = None
+    enabled: bool | None = None
+
+
 @router.patch("/api/sources/{source_id}")
-async def toggle_source(source_id: str, enabled: bool):
+async def update_source(source_id: str, payload: SourceEditIn):
+    """
+    Partial update — only fields actually present in the request body are
+    changed; everything else is left as-is. This is what backs both the
+    quick pause/resume toggle (sends only `enabled`) and the full Edit
+    Source modal (sends whatever fields the user changed). Previously
+    this endpoint only supported toggling `enabled`, so editing a
+    source's name/URL/category/interval meant deleting and re-adding it
+    — this is the actual fix for that gap.
+    """
+    if payload.connector_type is not None and payload.connector_type not in CONNECTOR_REGISTRY:
+        raise HTTPException(
+            400,
+            f"Unsupported source type '{payload.connector_type}'. "
+            f"v1.0 only supports: {', '.join(CONNECTOR_REGISTRY)}.",
+        )
+
     db = await get_db()
-    await db.execute("UPDATE sources SET enabled = ? WHERE id = ?", (int(enabled), source_id))
-    await db.commit()
+    cur = await db.execute("SELECT id FROM sources WHERE id = ?", (source_id,))
+    if not await cur.fetchone():
+        await db.close()
+        raise HTTPException(404, "source not found")
+
+    updates: dict = {}
+    for field in ("name", "url", "category", "color", "icon_url", "connector_type", "interval_seconds"):
+        value = getattr(payload, field)
+        if value is not None:
+            updates[field] = value
+    if payload.enabled is not None:
+        updates["enabled"] = int(payload.enabled)
+
+    if not updates:
+        await db.close()
+        return {"ok": True}
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    try:
+        await db.execute(f"UPDATE sources SET {set_clause} WHERE id = ?", [*updates.values(), source_id])
+        await db.commit()
+    except Exception as e:
+        await db.close()
+        raise HTTPException(400, f"Could not update source (maybe duplicate URL): {e}") from e
+
+    if "icon_url" in updates or "url" in updates:
+        invalidate_icon_cache(source_id)  # force a re-fetch on next request rather than serving a stale icon
+
     await db.close()
     await broadcast({"type": "sources_changed"})
     return {"ok": True}
@@ -541,11 +594,39 @@ async def add_webhook(webhook: WebhookIn):
     return {"id": wid}
 
 
+class WebhookEditIn(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    keyword: str | None = None
+    source_id: str | None = None
+    min_severity: str | None = None
+    enabled: bool | None = None
+
+
 @router.patch("/api/webhooks/{webhook_id}")
-async def update_webhook(webhook_id: str, enabled: bool):
+async def update_webhook(webhook_id: str, payload: WebhookEditIn):
+    """Partial update, same pattern as sources — only fields present in the body are changed."""
+    if payload.min_severity and payload.min_severity not in ("low", "medium", "high"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+
     db = await get_db()
-    await db.execute("UPDATE webhooks SET enabled = ? WHERE id = ?", (int(enabled), webhook_id))
-    await db.commit()
+    cur = await db.execute("SELECT id FROM webhooks WHERE id = ?", (webhook_id,))
+    if not await cur.fetchone():
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+
+    updates: dict = {}
+    for field in ("name", "url", "keyword", "source_id", "min_severity"):
+        value = getattr(payload, field)
+        if value is not None:
+            updates[field] = value
+    if payload.enabled is not None:
+        updates["enabled"] = int(payload.enabled)
+
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await db.execute(f"UPDATE webhooks SET {set_clause} WHERE id = ?", [*updates.values(), webhook_id])
+        await db.commit()
     await db.close()
     return {"ok": True}
 

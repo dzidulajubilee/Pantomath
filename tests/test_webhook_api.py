@@ -41,7 +41,7 @@ def test_add_webhook_rejects_invalid_severity():
 def test_toggle_webhook_enabled():
     add = client.post("/api/webhooks", json={"name": "T", "url": "http://example.com/hook"})
     wid = add.json()["id"]
-    client.patch(f"/api/webhooks/{wid}?enabled=false")
+    client.patch(f"/api/webhooks/{wid}", json={"enabled": False})
     webhooks = client.get("/api/webhooks").json()
     assert webhooks[0]["enabled"] == 0
 
@@ -51,6 +51,33 @@ def test_delete_webhook():
     wid = add.json()["id"]
     client.delete(f"/api/webhooks/{wid}")
     assert client.get("/api/webhooks").json() == []
+
+
+def test_edit_webhook_updates_only_provided_fields():
+    add = client.post("/api/webhooks", json={
+        "name": "Original", "url": "http://example.com/hook", "keyword": "ransomware",
+    })
+    wid = add.json()["id"]
+
+    resp = client.patch(f"/api/webhooks/{wid}", json={"name": "Renamed"})
+    assert resp.status_code == 200
+
+    webhook = client.get("/api/webhooks").json()[0]
+    assert webhook["name"] == "Renamed"
+    assert webhook["url"] == "http://example.com/hook"  # untouched
+    assert webhook["keyword"] == "ransomware"  # untouched
+
+
+def test_edit_webhook_rejects_invalid_severity():
+    add = client.post("/api/webhooks", json={"name": "T", "url": "http://example.com/hook"})
+    wid = add.json()["id"]
+    resp = client.patch(f"/api/webhooks/{wid}", json={"min_severity": "extreme"})
+    assert resp.status_code == 400
+
+
+def test_edit_nonexistent_webhook_returns_404():
+    resp = client.patch("/api/webhooks/does-not-exist", json={"name": "X"})
+    assert resp.status_code == 404
 
 
 class _CapturingHandler(BaseHTTPRequestHandler):

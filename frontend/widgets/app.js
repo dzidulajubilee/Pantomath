@@ -28,7 +28,7 @@ const CATEGORY_COLORS = {
 
 const VIEWS = [
   'dashboard', 'live-feed', 'critical', 'vulnerabilities', 'malware',
-  'ransomware', 'threat-actors', 'vendors', 'saved', 'sources', 'analytics', 'settings'
+  'ransomware', 'threat-actors', 'vendors', 'iocs', 'saved', 'sources', 'analytics', 'settings'
 ];
 const VIEW_LOADERS = {
   'dashboard': loadDashboard,
@@ -366,6 +366,7 @@ async function loadWebhooksTable() {
         </td>
         <td style="text-align:right; white-space:nowrap;">
           <button class="btn" data-action="test-webhook" data-id="${w.id}" style="padding:4px 10px; font-size:11px;">Test</button>
+          <button class="icon-btn" data-action="edit-webhook" data-id="${w.id}" title="Edit">&#9998;</button>
           <button class="icon-btn toggle" data-action="toggle-webhook" data-id="${w.id}" data-enabled="${w.enabled}" title="${w.enabled ? 'Pause' : 'Resume'}">${w.enabled ? '⏸' : '▶'}</button>
           <button class="icon-btn" data-action="delete-webhook" data-id="${w.id}" title="Remove">✕</button>
         </td>
@@ -388,9 +389,18 @@ async function loadWebhooksTable() {
       await loadWebhooksTable();
     };
   });
+  tbody.querySelectorAll('[data-action="edit-webhook"]').forEach(btn => {
+    btn.onclick = () => {
+      const webhook = webhooks.find(w => w.id === btn.dataset.id);
+      if (webhook) openWebhookModal(webhook);
+    };
+  });
   tbody.querySelectorAll('[data-action="toggle-webhook"]').forEach(btn => {
     btn.onclick = async () => {
-      await fetch(`/api/webhooks/${btn.dataset.id}?enabled=${btn.dataset.enabled !== 'true'}`, { method: 'PATCH' });
+      await fetch(`/api/webhooks/${btn.dataset.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: btn.dataset.enabled !== 'true' }),
+      });
       await loadWebhooksTable();
     };
   });
@@ -443,12 +453,19 @@ async function loadSourcesView() {
       <td>${s.interval_seconds}s</td>
       <td>${s.last_fetched ? timeAgo(s.last_fetched) : 'never'}</td>
       <td style="text-align:right;">
+        <button class="icon-btn" data-id="${s.id}" data-action="edit" title="Edit">&#9998;</button>
         <button class="icon-btn toggle" data-id="${s.id}" data-action="toggle" title="${s.enabled ? 'Pause' : 'Resume'}">${s.enabled ? '&#9208;' : '&#9654;'}</button>
         <button class="icon-btn" data-id="${s.id}" data-action="delete" title="Remove">&#10005;</button>
       </td>
     </tr>
   `).join('');
 
+  tbody.querySelectorAll('[data-action="edit"]').forEach(btn => {
+    btn.onclick = () => {
+      const src = sources.find(s => s.id === btn.dataset.id);
+      if (src) openModal(src);
+    };
+  });
   tbody.querySelectorAll('[data-action="delete"]').forEach(btn => {
     btn.onclick = async () => {
       if (confirm('Remove this source and its cached items?')) {
@@ -460,7 +477,10 @@ async function loadSourcesView() {
   tbody.querySelectorAll('[data-action="toggle"]').forEach(btn => {
     btn.onclick = async () => {
       const src = sources.find(s => s.id === btn.dataset.id);
-      await fetch('/api/sources/' + btn.dataset.id + '?enabled=' + (!src.enabled), { method: 'PATCH' });
+      await fetch('/api/sources/' + btn.dataset.id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !src.enabled }),
+      });
       await loadSourcesView();
     };
   });
@@ -543,13 +563,25 @@ document.getElementById('reprocessBtn').onclick = async () => {
   btn.textContent = 'Reprocess all';
 };
 
-// -------------------------------------------------------------- add-source modal
+// -------------------------------------------------------------- add/edit-source modal
 
 const modal = document.getElementById('modalOverlay');
-function openModal() { modal.classList.add('open'); }
-function closeModal() { modal.classList.remove('open'); }
-document.getElementById('addSourceBtnHeader').onclick = openModal;
-document.getElementById('addSourceBtnSources').onclick = openModal;
+let editingSourceId = null;
+
+function openModal(source) {
+  editingSourceId = source ? source.id : null;
+  document.getElementById('modalTitle').textContent = source ? 'Edit feed source' : 'Add feed source';
+  document.getElementById('confirmAdd').textContent = source ? 'Save changes' : 'Add source';
+  document.getElementById('srcName').value = source ? source.name : '';
+  document.getElementById('srcUrl').value = source ? source.url : '';
+  document.getElementById('srcCategory').value = source ? source.category : 'general';
+  document.getElementById('srcIcon').value = (source && source.icon_url) ? source.icon_url : '';
+  document.getElementById('srcInterval').value = source ? source.interval_seconds : (document.getElementById('defaultInterval').value || 300);
+  modal.classList.add('open');
+}
+function closeModal() { modal.classList.remove('open'); editingSourceId = null; }
+document.getElementById('addSourceBtnHeader').onclick = () => openModal(null);
+document.getElementById('addSourceBtnSources').onclick = () => openModal(null);
 document.getElementById('cancelAdd').onclick = closeModal;
 modal.onclick = (e) => { if (e.target === modal) closeModal(); };
 
@@ -561,8 +593,10 @@ document.getElementById('confirmAdd').onclick = async () => {
   const interval_seconds = parseInt(document.getElementById('srcInterval').value) || 300;
   if (!name || !url) { alert('Name and URL are required'); return; }
   const color = CATEGORY_COLORS[category] || '#5eead4';
-  const res = await fetch('/api/sources', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+
+  const isEditing = !!editingSourceId;
+  const res = await fetch(isEditing ? `/api/sources/${editingSourceId}` : '/api/sources', {
+    method: isEditing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, url, category, color, icon_url: iconUrlInput || null, interval_seconds })
   });
   if (res.ok) {
@@ -582,17 +616,29 @@ document.getElementById('srcInterval').addEventListener('focus', function () {
   if (d && d.value) this.value = d.value;
 }, { once: false });
 
-// -------------------------------------------------------------- add-webhook modal
+// -------------------------------------------------------------- add/edit-webhook modal
 
 const webhookModal = document.getElementById('webhookModalOverlay');
-function openWebhookModal() {
+let editingWebhookId = null;
+
+function openWebhookModal(webhook) {
+  editingWebhookId = webhook ? webhook.id : null;
+  document.getElementById('webhookModalTitle').textContent = webhook ? 'Edit webhook' : 'Add webhook';
+  document.getElementById('confirmAddWebhook').textContent = webhook ? 'Save changes' : 'Add webhook';
+
   const select = document.getElementById('whSource');
   select.innerHTML = '<option value="">Any source</option>' +
     sources.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+
+  document.getElementById('whName').value = webhook ? webhook.name : '';
+  document.getElementById('whUrl').value = webhook ? webhook.url : '';
+  document.getElementById('whKeyword').value = webhook ? webhook.keyword : '';
+  document.getElementById('whSource').value = webhook ? webhook.source_id : '';
+  document.getElementById('whMinSeverity').value = webhook ? webhook.min_severity : '';
   webhookModal.classList.add('open');
 }
-function closeWebhookModal() { webhookModal.classList.remove('open'); }
-document.getElementById('addWebhookBtn').onclick = openWebhookModal;
+function closeWebhookModal() { webhookModal.classList.remove('open'); editingWebhookId = null; }
+document.getElementById('addWebhookBtn').onclick = () => openWebhookModal(null);
 document.getElementById('cancelAddWebhook').onclick = closeWebhookModal;
 webhookModal.onclick = (e) => { if (e.target === webhookModal) closeWebhookModal(); };
 
@@ -604,8 +650,9 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
   const min_severity = document.getElementById('whMinSeverity').value;
   if (!name || !url) { alert('Name and webhook URL are required'); return; }
 
-  const res = await fetch('/api/webhooks', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const isEditing = !!editingWebhookId;
+  const res = await fetch(isEditing ? `/api/webhooks/${editingWebhookId}` : '/api/webhooks', {
+    method: isEditing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, url, keyword, source_id, min_severity }),
   });
   if (res.ok) {

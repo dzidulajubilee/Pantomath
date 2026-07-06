@@ -74,6 +74,9 @@ Everything is managed from the UI:
   before a detection feature existed.
 - **Refresh all now** (Sources page): fetches every enabled source
   immediately rather than waiting for its scheduled interval.
+- **Edit sources and webhooks in place** — change a source's URL,
+  category, or poll interval, or a webhook's keyword/source/severity
+  filter, without deleting and recreating it.
 - **Numbered pagination** on Live Feed, with severity/keyword/date
   filters fully server-side for accurate page counts.
 

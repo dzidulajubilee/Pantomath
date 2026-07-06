@@ -52,6 +52,60 @@ def test_deleting_source_removes_it():
     assert all(s["id"] != source_id for s in sources)
 
 
+def test_edit_source_updates_only_provided_fields():
+    """
+    Regression test for a real reported gap: editing a source used to
+    require deleting and re-adding it. name/url/category/interval should
+    all be independently editable in place now.
+    """
+    add_resp = client.post("/api/sources", json={
+        "name": "Original Name", "url": "http://example.com/original.xml",
+        "category": "news", "interval_seconds": 300,
+    })
+    source_id = add_resp.json()["id"]
+
+    resp = client.patch(f"/api/sources/{source_id}", json={"name": "Renamed", "interval_seconds": 600})
+    assert resp.status_code == 200
+
+    sources = client.get("/api/sources").json()
+    source = next(s for s in sources if s["id"] == source_id)
+    assert source["name"] == "Renamed"
+    assert source["interval_seconds"] == 600
+    assert source["url"] == "http://example.com/original.xml"  # untouched
+    assert source["category"] == "news"  # untouched
+
+
+def test_edit_source_can_change_url_without_delete_and_readd():
+    add_resp = client.post("/api/sources", json={"name": "T", "url": "http://example.com/old.xml"})
+    source_id = add_resp.json()["id"]
+    resp = client.patch(f"/api/sources/{source_id}", json={"url": "http://example.com/new.xml"})
+    assert resp.status_code == 200
+    source = client.get("/api/sources").json()[0]
+    assert source["url"] == "http://example.com/new.xml"
+    assert source["id"] == source_id  # same source, not a new one
+
+
+def test_edit_source_rejects_unsupported_connector_type():
+    add_resp = client.post("/api/sources", json={"name": "T", "url": "http://example.com/x.xml"})
+    source_id = add_resp.json()["id"]
+    resp = client.patch(f"/api/sources/{source_id}", json={"connector_type": "taxii"})
+    assert resp.status_code == 400
+
+
+def test_edit_nonexistent_source_returns_404():
+    resp = client.patch("/api/sources/does-not-exist", json={"name": "X"})
+    assert resp.status_code == 404
+
+
+def test_toggle_source_enabled_still_works_via_json_body():
+    add_resp = client.post("/api/sources", json={"name": "T", "url": "http://example.com/toggle.xml"})
+    source_id = add_resp.json()["id"]
+    resp = client.patch(f"/api/sources/{source_id}", json={"enabled": False})
+    assert resp.status_code == 200
+    source = client.get("/api/sources").json()[0]
+    assert source["enabled"] == 0
+
+
 def test_settings_default_retention_is_forever():
     resp = client.get("/api/settings")
     assert resp.json()["retention_days"] == 0

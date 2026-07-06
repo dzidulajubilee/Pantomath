@@ -375,6 +375,48 @@ match. `frontend/widgets/pagination.js` renders the numbered
 first/prev/…/next/last control — dependency-free, consistent with the
 rest of the app's charts/calendar-style widgets.
 
+## A real shipped bug: views registered but never visible
+
+`navigateTo(view)` toggles the `active` CSS class on `#view-<name>`
+sections by iterating the `VIEWS` array — but `VIEWS` and
+`VIEW_LOADERS` are two separate lists maintained by hand, and 'iocs' was
+added to `VIEW_LOADERS` (and got a nav button, and got an HTML section)
+without also being added to `VIEWS`. The result: clicking "IOCs"
+correctly ran `loadIOCsView()`, which correctly populated its charts —
+but the section itself never received the `active` class, so it stayed
+hidden via `display:none` forever. No JS error, no console warning,
+nothing — just a permanently blank content area. Confirmed with a real
+headless-DOM test (jsdom) that loaded the actual served page, clicked
+the actual nav button, and checked the actual resulting classList state,
+rather than reasoning about the code in the abstract.
+
+`tests/test_frontend_view_consistency.py` guards against this
+permanently: plain regex checks (no JS runtime dependency in the test
+suite) that every entry in `VIEW_LOADERS` is in `VIEWS`, every nav
+button's `data-view` is in `VIEWS`, and every entry in `VIEWS` has both
+a matching HTML section and a nav button. Verified the test actually
+catches the bug by reintroducing it and watching the test fail, then
+restoring the fix and watching it pass — not just written to look
+plausible.
+
+## Editing sources and webhooks in place
+
+`PATCH /api/sources/{id}` and `PATCH /api/webhooks/{id}` used to only
+accept a single `enabled` query parameter (pause/resume). Both now
+accept a full partial-update JSON body — only fields actually present in
+the request change, everything else is left alone. This is what backs
+the Edit button on both the Sources and Webhooks tables: the same
+Add-modal is reopened pre-filled with the row's current values, and
+submitting sends a PATCH instead of a POST. Previously the only way to
+change a source's URL or a webhook's keyword filter was to delete it and
+recreate it (losing the source's polling history/status in the process).
+Editing a source's `icon_url` or `url` invalidates its cached favicon so
+a stale icon doesn't linger. Verified end-to-end with jsdom: opened the
+real edit modal by clicking the real Edit button, confirmed the fields
+were genuinely pre-filled (not just visually similar), submitted, and
+confirmed the source/webhook count stayed the same (a PATCH, not an
+accidental duplicate POST) with unedited fields left untouched.
+
 ## UI
 
 Twelve views, matching the target navigation: Dashboard, Live Feed,

@@ -399,6 +399,40 @@ catches the bug by reintroducing it and watching the test fail, then
 restoring the fix and watching it pass — not just written to look
 plausible.
 
+## A real shipped bug: the IOC drilldown closing itself on every auto-refresh
+
+Reported behavior: click an IOC on the IOCs page to open the "Articles
+containing…" drilldown, then the next time a feed poll finds new items
+(or the 30s fallback poll in `init()`), the drilldown silently closes
+and the view resets to just the top chart — with no user action.
+
+Root cause: both the WebSocket `new_items` handler and the 30s
+`setInterval` in `init()` re-run `VIEW_LOADERS[currentView()]?.()` on
+every auto-refresh — the simplest-correct pattern described above under
+"websocket". For the IOCs page that's `loadIOCsView()`, which
+unconditionally hid `#iocArticlesPanel` on every call, since it had no
+memory of whether a drilldown was open. So a feed poll finding a single
+new item anywhere would close a drilldown that had nothing to do with
+that item, without any error being thrown.
+
+Fixed by tracking the open drilldown at module level (`iocDrilldown =
+{ type, value }`, same pattern as `currentIocType`/`liveCurrentPage`),
+set in `showIocArticles()`. `loadIOCsView()` now checks it: if a
+drilldown for the *currently selected IOC type* is open, it re-renders
+that same drilldown (picking up any new matching articles) instead of
+closing it; only a genuine context change — explicitly clicking a
+different IOC type button — clears it.
+
+Verified end-to-end with jsdom against the real served files: opened a
+drilldown by clicking a bar, simulated a `new_items` WebSocket
+broadcast, confirmed the panel and its content survive. Confirmed the
+identical scenario reproduces the bug (panel silently closes) when run
+against the pre-fix file, so the test genuinely catches this class of
+regression, not just the specific line changed.
+`tests/test_ioc_drilldown_persistence.py` keeps the same regex-based,
+no-JS-runtime tradeoff as `test_frontend_view_consistency.py` to guard
+against it permanently.
+
 ## Editing sources and webhooks in place
 
 `PATCH /api/sources/{id}` and `PATCH /api/webhooks/{id}` used to only

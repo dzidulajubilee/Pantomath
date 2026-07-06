@@ -257,13 +257,17 @@ async function loadThreatActors() {
 const IOC_TYPE_LABELS = { cve: 'CVEs', ip: 'IP Addresses', hash: 'Hashes', email: 'Emails' };
 const IOC_TYPE_COLORS = { cve: '#5eead4', ip: '#60a5fa', hash: '#a78bfa', email: '#34d399' };
 let currentIocType = 'cve';
+// The currently open "Articles containing…" drilldown, if any ({ type, value }).
+// Tracked at module level (same pattern as currentIocType/liveCurrentPage/etc.)
+// so an auto-refresh of this view — a WebSocket new_items broadcast or the
+// 30s poll in init() — can restore it instead of always closing it.
+let iocDrilldown = null;
 
 async function loadIOCsView() {
   document.querySelectorAll('.ioc-type-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.iocType === currentIocType);
   });
   document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned`;
-  document.getElementById('iocArticlesPanel').style.display = 'none';
 
   const top = await (await fetch(`/api/iocs?type=${currentIocType}&limit=10`)).json();
   renderBarChart(document.getElementById('iocTopChart'),
@@ -276,13 +280,24 @@ async function loadIOCsView() {
       label, count: summary[type] || 0, color: IOC_TYPE_COLORS[type],
     })),
     { centerLabel: 'distinct IOCs' });
+
+  // Restore an open drilldown across auto-refreshes rather than always
+  // closing it — but only for the IOC type currently being viewed; switching
+  // type (below) is a genuine context change and should close it.
+  if (iocDrilldown && iocDrilldown.type === currentIocType) {
+    await showIocArticles(iocDrilldown.type, iocDrilldown.value, { scrollIntoView: false });
+  } else {
+    iocDrilldown = null;
+    document.getElementById('iocArticlesPanel').style.display = 'none';
+  }
 }
 
 document.querySelectorAll('.ioc-type-btn').forEach(btn => {
-  btn.onclick = () => { currentIocType = btn.dataset.iocType; loadIOCsView(); };
+  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; loadIOCsView(); };
 });
 
-async function showIocArticles(iocType, value) {
+async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
+  iocDrilldown = { type: iocType, value };
   const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50 });
   const panel = document.getElementById('iocArticlesPanel');
   const tbody = document.getElementById('iocArticlesBody');
@@ -301,7 +316,7 @@ async function showIocArticles(iocType, value) {
       `).join('');
 
   panel.style.display = '';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // -------------------------------------------------------------- analytics

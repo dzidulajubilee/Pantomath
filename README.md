@@ -30,6 +30,14 @@ Open **http://localhost:7373**. The source list is empty — click **+ Add
 Source**, paste an RSS/Atom URL, and it starts polling immediately. Leave
 the icon field blank and Pantomath fetches the site's favicon for you.
 
+## Fully local, no CDN dependencies
+
+Fonts and sidebar icons are bundled in the repo (`frontend/assets/`), not
+loaded from Google Fonts or an icon CDN — works fully offline, and
+doesn't leak page-load telemetry to a third party. See
+`docs/ARCHITECTURE.md` for licensing details (both OFL/ISC, license
+files included alongside the assets).
+
 ## Configuration
 
 Everything is managed from the UI:
@@ -46,6 +54,31 @@ Everything is managed from the UI:
 - **Desktop notifications**: real browser notifications for new items above
   a severity threshold you set — requires the dashboard tab to stay open
   (see Honest scope notes)
+- **History**: nothing is deleted automatically (configurable in Settings
+  if you ever want a retention cap). Live Feed has date-range filtering
+  and "Load more" pagination to browse whatever's accumulated over time.
+- **IOCs**: CVEs, IP addresses, hashes, and emails are automatically
+  extracted from every article (rule-based, see
+  `docs/ARCHITECTURE.md`). The IOCs page shows top indicators per type
+  and a distribution breakdown — click any one to see exactly which
+  articles mention it. **Deep extraction** (on by default, toggle in
+  Settings) fetches each new article's full page rather than just the
+  RSS teaser, since real indicators usually aren't in the short summary.
+- **Webhook alerts**: send a POST to any URL when a new item matches a
+  keyword, a specific source, and/or a minimum severity — configurable
+  in Settings, with a one-click test button. Works over plain HTTP,
+  unlike browser notifications.
+- **Reprocess stored items** (Settings): re-runs severity/tagging/IOC
+  detection against everything already on disk, without re-fetching any
+  RSS feed. Use this after an upgrade to backfill data for items stored
+  before a detection feature existed.
+- **Refresh all now** (Sources page): fetches every enabled source
+  immediately rather than waiting for its scheduled interval.
+- **Edit sources and webhooks in place** — change a source's URL,
+  category, or poll interval, or a webhook's keyword/source/severity
+  filter, without deleting and recreating it.
+- **Numbered pagination** on Live Feed, with severity/keyword/date
+  filters fully server-side for accurate page counts.
 
 Data lives in a single SQLite file: `/var/lib/pantomath/pantomath.db`.
 Source icons are fetched once and cached to disk next to it (in an
@@ -67,11 +100,38 @@ sudo systemctl restart pantomath
 
 **Honest scope notes** (things intentionally simplified in this version):
 - Vendor/threat-actor tagging is keyword-based, not NLP/ML — see
-  `backend/intelligence/tagging.py` to tune or extend the lists.
+  `pantomath/intelligence/tagging.py` to tune or extend the lists.
 - Desktop notifications only fire while the dashboard tab is open in your
   browser (standard browser Notification API, no background push) — see
   `docs/ARCHITECTURE.md`.
 - Light/dark only — no custom theme colors yet.
+- RSS itself only exposes a source's most recent items — Pantomath can't
+  retroactively pull a year of history a source never published via RSS.
+  "Keep forever" (the default) means everything Pantomath *has* seen
+  stays browsable; it accumulates real history over time rather than
+  fabricating it.
+- Deep extraction (fetching full article pages) means more outbound
+  requests and a slower first poll for a newly-added source — turn it
+  off in Settings if that's not a tradeoff you want. It fails silently
+  back to summary-only text on paywalls/timeouts/blocks, never blocks
+  storing an item.
+- Webhook payloads are a generic JSON shape with a Slack/Discord-compatible
+  "text" field, not a native integration for any specific service — full
+  native formatting (Slack blocks, Discord embeds) would need a small
+  transform in front of the webhook URL.
+
+## Upgrading
+
+After upgrading to a new version, two things are worth doing from
+Settings:
+1. **Reprocess all stored items** — if the new version added or improved
+   any detection (IOCs, tagging, severity scoring), your existing items
+   won't have that data until you do this. It's a one-time backfill, not
+   something that happens automatically on upgrade.
+2. **Hard-refresh your browser tab** (Ctrl+Shift+R / Cmd+Shift+R) once,
+   just in case — the dashboard cache-busts its own CSS/JS against the
+   installed version automatically, but it's a cheap sanity check after
+   a version jump.
 
 ## Operating
 
@@ -98,11 +158,30 @@ Full purge (wipes data): `sudo apt purge pantomath`
 ## Running without installing a package (dev mode)
 
 ```bash
+make dev              # creates venv/, pip install -e ".[dev]"
+source venv/bin/activate
+make run              # -> http://localhost:7373
+```
+
+Or by hand:
+```bash
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 export PANTOMATH_DB=./data/pantomath.db
 export PYTHONPATH=.
-uvicorn backend.app:app --reload --port 7373
+uvicorn pantomath.app:app --reload --port 7373
+```
+
+## Development
+
+Pantomath is a normal installable Python package (`pyproject.toml`), with
+a pytest suite and ruff for linting — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contributor guide.
+
+```bash
+make test    # pytest — 34 tests covering dedup, tagging, connector registry, API behavior
+make lint    # ruff check
+make fmt     # ruff check --fix + format
 ```
 
 ## Previews

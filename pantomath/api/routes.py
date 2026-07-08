@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
+from pantomath.alerts.webhook_keys import check_and_consume_attempt, hash_key, mask_url, new_salt
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
 from pantomath.database.sqlite import DB_PATH, get_db
 from pantomath.intelligence.enrichment import (
@@ -13,6 +15,7 @@ from pantomath.intelligence.enrichment import (
     fetch_and_cache_icon_sync,
     invalidate_icon_cache,
 )
+from pantomath.intelligence.reprocessor import reprocess_items
 
 router = APIRouter()
 active_ws: list[WebSocket] = []
@@ -139,11 +142,64 @@ async def delete_source(source_id: str):
     return {"ok": True}
 
 
+class SourceEditIn(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    category: str | None = None
+    color: str | None = None
+    icon_url: str | None = None
+    connector_type: str | None = None
+    interval_seconds: int | None = None
+    enabled: bool | None = None
+
+
 @router.patch("/api/sources/{source_id}")
-async def toggle_source(source_id: str, enabled: bool):
+async def update_source(source_id: str, payload: SourceEditIn):
+    """
+    Partial update — only fields actually present in the request body are
+    changed; everything else is left as-is. This is what backs both the
+    quick pause/resume toggle (sends only `enabled`) and the full Edit
+    Source modal (sends whatever fields the user changed). Previously
+    this endpoint only supported toggling `enabled`, so editing a
+    source's name/URL/category/interval meant deleting and re-adding it
+    — this is the actual fix for that gap.
+    """
+    if payload.connector_type is not None and payload.connector_type not in CONNECTOR_REGISTRY:
+        raise HTTPException(
+            400,
+            f"Unsupported source type '{payload.connector_type}'. "
+            f"v1.0 only supports: {', '.join(CONNECTOR_REGISTRY)}.",
+        )
+
     db = await get_db()
-    await db.execute("UPDATE sources SET enabled = ? WHERE id = ?", (int(enabled), source_id))
-    await db.commit()
+    cur = await db.execute("SELECT id FROM sources WHERE id = ?", (source_id,))
+    if not await cur.fetchone():
+        await db.close()
+        raise HTTPException(404, "source not found")
+
+    updates: dict = {}
+    for field in ("name", "url", "category", "color", "icon_url", "connector_type", "interval_seconds"):
+        value = getattr(payload, field)
+        if value is not None:
+            updates[field] = value
+    if payload.enabled is not None:
+        updates["enabled"] = int(payload.enabled)
+
+    if not updates:
+        await db.close()
+        return {"ok": True}
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    try:
+        await db.execute(f"UPDATE sources SET {set_clause} WHERE id = ?", [*updates.values(), source_id])
+        await db.commit()
+    except Exception as e:
+        await db.close()
+        raise HTTPException(400, f"Could not update source (maybe duplicate URL): {e}") from e
+
+    if "icon_url" in updates or "url" in updates:
+        invalidate_icon_cache(source_id)  # force a re-fetch on next request rather than serving a stale icon
+
     await db.close()
     await broadcast({"type": "sources_changed"})
     return {"ok": True}
@@ -184,26 +240,17 @@ async def import_sources(payload: dict):
 
 # -------------------------------------------------------------------- items
 
-@router.get("/api/items")
-async def list_items(
-    limit: int = 100,
-    offset: int = 0,
-    source_id: str | None = None,
-    category: str | None = None,
-    severity: str | None = None,
-    keyword: str | None = None,
-    vendor: str | None = None,
-    actor: str | None = None,
-    ioc_type: str | None = None,   # 'cve' | 'ip' | 'hash' | 'email'
-    ioc_value: str | None = None,
-    bookmarked_only: bool = False,
-    date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
-    date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
+def _build_item_conditions(
+    source_id=None, category=None, severity=None, keyword=None, vendor=None, actor=None,
+    ioc_type=None, ioc_value=None, has_cve=False, has_actor=False, bookmarked_only=False,
+    date_from=None, date_to=None,
 ):
-    db = await get_db()
-    q = """SELECT items.*, sources.name as source_name, sources.color as source_color,
-                  sources.icon_url as source_icon, sources.category as category
-           FROM items JOIN sources ON items.source_id = sources.id"""
+    """
+    Shared WHERE-condition builder for GET /api/items and GET
+    /api/items/count — kept in one place so the two can never drift out
+    of sync (an accurate total is meaningless if it's computed with
+    different filter logic than the page of results it's counting).
+    """
     conditions = []
     params = []
     if source_id:
@@ -213,8 +260,13 @@ async def list_items(
         conditions.append("sources.category = ?")
         params.append(category)
     if severity:
-        conditions.append("items.severity = ?")
-        params.append(severity)
+        # comma-separated for multi-select (e.g. "high,medium"); a single
+        # value works the same as before via a one-element IN clause.
+        values = [s.strip() for s in severity.split(",") if s.strip()]
+        if values:
+            placeholders = ",".join("?" * len(values))
+            conditions.append(f"items.severity IN ({placeholders})")
+            params += values
     if keyword:
         conditions.append("(items.title LIKE ? OR items.summary LIKE ?)")
         params += [f"%{keyword}%", f"%{keyword}%"]
@@ -230,6 +282,10 @@ async def list_items(
             raise HTTPException(400, f"Unknown ioc_type '{ioc_type}'. Use one of: cve, ip, hash, email.")
         conditions.append(f"(',' || items.{ioc_column} || ',') LIKE ?")
         params.append(f"%,{ioc_value},%")
+    if has_cve:
+        conditions.append("items.cves != ''")
+    if has_actor:
+        conditions.append("items.actors != ''")
     if bookmarked_only:
         conditions.append("items.bookmarked = 1")
     if date_from:
@@ -238,6 +294,35 @@ async def list_items(
     if date_to:
         conditions.append("items.fetched_at <= ?")
         params.append(_day_end_ts(date_to))
+    return conditions, params
+
+
+@router.get("/api/items")
+async def list_items(
+    limit: int = 100,
+    offset: int = 0,
+    source_id: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,  # single value, or comma-separated for multiple (e.g. "high,medium")
+    keyword: str | None = None,
+    vendor: str | None = None,
+    actor: str | None = None,
+    ioc_type: str | None = None,   # 'cve' | 'ip' | 'hash' | 'email'
+    ioc_value: str | None = None,
+    has_cve: bool = False,  # items with at least one extracted CVE, regardless of source category
+    has_actor: bool = False,  # items with at least one detected threat actor (ransomware gang/APT group)
+    bookmarked_only: bool = False,
+    date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
+    date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
+):
+    db = await get_db()
+    q = """SELECT items.*, sources.name as source_name, sources.color as source_color,
+                  sources.icon_url as source_icon, sources.category as category
+           FROM items JOIN sources ON items.source_id = sources.id"""
+    conditions, params = _build_item_conditions(
+        source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
+        has_cve, has_actor, bookmarked_only, date_from, date_to,
+    )
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
     q += " ORDER BY items.fetched_at DESC LIMIT ? OFFSET ?"
@@ -246,6 +331,37 @@ async def list_items(
     rows = [_row_to_item(dict(r)) for r in await cur.fetchall()]
     await db.close()
     return rows
+
+
+@router.get("/api/items/count")
+async def count_items(
+    source_id: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,
+    keyword: str | None = None,
+    vendor: str | None = None,
+    actor: str | None = None,
+    ioc_type: str | None = None,
+    ioc_value: str | None = None,
+    has_cve: bool = False,
+    has_actor: bool = False,
+    bookmarked_only: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    """Total matching items for the same filters GET /api/items accepts — powers numbered pagination."""
+    db = await get_db()
+    q = "SELECT COUNT(*) as total FROM items JOIN sources ON items.source_id = sources.id"
+    conditions, params = _build_item_conditions(
+        source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
+        has_cve, has_actor, bookmarked_only, date_from, date_to,
+    )
+    if conditions:
+        q += " WHERE " + " AND ".join(conditions)
+    cur = await db.execute(q, params)
+    row = await cur.fetchone()
+    await db.close()
+    return {"total": row["total"]}
 
 
 def _day_start_ts(date_str: str) -> float:
@@ -300,8 +416,19 @@ _IOC_COLUMNS = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}
 
 
 @router.get("/api/iocs")
-async def list_iocs(type: str = "cve", limit: int = 20):
-    """Distinct IOCs of one type with occurrence counts — powers the IOCs page's bar chart and chip list."""
+async def list_iocs(type: str = "cve", limit: int = 20, offset: int = 0):
+    """
+    Distinct IOCs of one type with occurrence counts, paginated —
+    powers the IOCs page's bar chart and chip list. `offset` lets the
+    frontend page through every distinct IOC of a type instead of only
+    ever seeing the top `limit`; pair with GET /api/iocs/summary's
+    per-type distinct count to know how many pages exist.
+
+    Ranked by count descending, then by name ascending as a tiebreaker
+    — without a deterministic tiebreak, IOCs with equal counts could
+    silently swap pages between requests (dict ordering isn't a
+    stable ranking), which would be confusing while paginating.
+    """
     col = _IOC_COLUMNS.get(type)
     if not col:
         raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
@@ -314,8 +441,9 @@ async def list_iocs(type: str = "cve", limit: int = 20):
         for value in row[0].split(","):
             if value:
                 counts[value] = counts.get(value, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    return [{"name": name, "count": count} for name, count in ranked]
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    page = ranked[offset:offset + limit]
+    return [{"name": name, "count": count} for name, count in page]
 
 
 @router.get("/api/iocs/summary")
@@ -422,6 +550,10 @@ async def get_settings():
     return {
         # 0 = keep forever (default). Otherwise, a number of days.
         "retention_days": int(rows.get("retention_days", 0)),
+        # Whether new items get their full article page fetched for
+        # richer severity/tag/IOC extraction. Default on — see
+        # pantomath/connectors/rss.py:_deep_extraction_enabled.
+        "deep_extraction": rows.get("deep_extraction", "1") != "0",
     }
 
 
@@ -438,6 +570,194 @@ async def update_settings(payload: dict):
     return {"ok": True}
 
 
+# ----------------------------------------------------------------- webhooks
+
+class WebhookIn(BaseModel):
+    name: str
+    url: str
+    keyword: str = ""
+    source_id: str = ""
+    min_severity: str = ""
+    enabled: bool = True
+    key: str | None = None  # optional — if set, this webhook is protected from creation
+
+
+def _serialize_webhook(row: dict) -> dict:
+    """Never sends key_hash/key_salt/attempt-tracking to the client, and
+    masks the URL for protected webhooks — the whole point of protecting
+    one is that loading the Settings page shouldn't hand out the real URL."""
+    out = {k: v for k, v in row.items() if k not in ("key_hash", "key_salt", "key_fail_count", "key_locked_until")}
+    if row.get("protected"):
+        out["url"] = mask_url(row["url"])
+    return out
+
+
+@router.get("/api/webhooks")
+async def list_webhooks():
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks ORDER BY name")
+    rows = [_serialize_webhook(dict(r)) for r in await cur.fetchall()]
+    await db.close()
+    return rows
+
+
+@router.post("/api/webhooks")
+async def add_webhook(webhook: WebhookIn):
+    if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+    if webhook.key is not None and not webhook.key.strip():
+        raise HTTPException(400, "Webhook key can't be blank")
+
+    db = await get_db()
+    wid = str(uuid.uuid4())
+    protected, key_salt, key_hash = 0, None, None
+    if webhook.key:
+        salt = new_salt()
+        protected, key_salt, key_hash = 1, salt.hex(), hash_key(webhook.key, salt)
+
+    await db.execute(
+        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (wid, webhook.name, webhook.url, webhook.keyword, webhook.source_id,
+         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash),
+    )
+    await db.commit()
+    await db.close()
+    return {"id": wid}
+
+
+class WebhookEditIn(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    keyword: str | None = None
+    source_id: str | None = None
+    min_severity: str | None = None
+    enabled: bool | None = None
+    key: str | None = None            # current key — required to authorize any change to an already-protected webhook
+    set_key: str | None = None        # sets a new key: adds protection if there wasn't any, or changes the existing one
+    remove_protection: bool = False   # drops protection entirely (still requires the current `key`)
+
+
+class WebhookKeyIn(BaseModel):
+    key: str
+
+
+@router.patch("/api/webhooks/{webhook_id}")
+async def update_webhook(webhook_id: str, payload: WebhookEditIn):
+    """Partial update, same pattern as sources — only fields present in the body are changed.
+    A protected webhook requires the correct `key` before anything about it
+    can change, including removing the protection itself."""
+    if payload.min_severity and payload.min_severity not in ("low", "medium", "high"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    row = await cur.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+    row = dict(row)
+
+    if row.get("protected"):
+        ok, err = await check_and_consume_attempt(db, row, payload.key or "")
+        if not ok:
+            await db.close()
+            raise HTTPException(401, err)
+
+    updates: dict = {}
+    for field in ("name", "url", "keyword", "source_id", "min_severity"):
+        value = getattr(payload, field)
+        if value is not None:
+            updates[field] = value
+    if payload.enabled is not None:
+        updates["enabled"] = int(payload.enabled)
+
+    if payload.set_key is not None:
+        if not payload.set_key.strip():
+            await db.close()
+            raise HTTPException(400, "Webhook key can't be blank")
+        salt = new_salt()
+        updates.update(
+            protected=1, key_salt=salt.hex(), key_hash=hash_key(payload.set_key, salt),
+            key_fail_count=0, key_locked_until=0,
+        )
+    elif payload.remove_protection:
+        updates.update(protected=0, key_salt=None, key_hash=None, key_fail_count=0, key_locked_until=0)
+
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await db.execute(f"UPDATE webhooks SET {set_clause} WHERE id = ?", [*updates.values(), webhook_id])
+        await db.commit()
+    await db.close()
+    return {"ok": True}
+
+
+@router.post("/api/webhooks/{webhook_id}/reveal")
+async def reveal_webhook_url(webhook_id: str, payload: WebhookKeyIn):
+    """Returns the real URL for a webhook. Unprotected webhooks return it
+    immediately; protected ones require the correct key. This — plus
+    deleting and recreating — is the only way to see a protected webhook's
+    full URL again."""
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    row = await cur.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+    row = dict(row)
+
+    if not row.get("protected"):
+        await db.close()
+        return {"url": row["url"]}
+
+    ok, err = await check_and_consume_attempt(db, row, payload.key)
+    await db.close()
+    if not ok:
+        raise HTTPException(401, err)
+    return {"url": row["url"]}
+
+
+@router.delete("/api/webhooks/{webhook_id}")
+async def delete_webhook(webhook_id: str):
+    db = await get_db()
+    await db.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+    await db.commit()
+    await db.close()
+    return {"ok": True}
+
+
+@router.post("/api/webhooks/{webhook_id}/test")
+async def test_webhook(webhook_id: str):
+    """Sends a synthetic test payload immediately, so you can verify a webhook works without waiting for a real match."""
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    webhook = await cur.fetchone()
+    if not webhook:
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+    webhook = dict(webhook)
+
+    test_item = {
+        "id": "test", "title": "Pantomath test alert",
+        "summary": "This is a test payload sent from the Settings page — if you're seeing this, the webhook is working.",
+        "link": "", "severity": "high", "source_id": "", "source_name": "Pantomath",
+        "category": "general", "vendors": [], "actors": [], "cves": [],
+    }
+    payload = build_payload(test_item, webhook)
+    loop = asyncio.get_event_loop()
+    ok, status = await loop.run_in_executor(None, send_webhook_sync, webhook["url"], payload)
+
+    await db.execute(
+        "UPDATE webhooks SET last_triggered = ?, last_status = ? WHERE id = ?",
+        (time.time(), status, webhook_id),
+    )
+    await db.commit()
+    await db.close()
+    if not ok:
+        raise HTTPException(502, f"Webhook delivery failed: {status}")
+    return {"ok": True, "status": status}
+
+
 # ----------------------------------------------------------------- polling
 
 def make_poll_now_route(scheduler):
@@ -452,7 +772,54 @@ def make_poll_now_route(scheduler):
         await scheduler.poll_source(db, dict(src))
         await db.close()
         return {"ok": True}
+
+    @router.post("/api/sources/poll-all")
+    async def poll_all_now():
+        """
+        Refreshes every enabled source immediately, bypassing each
+        source's normal interval throttle — an on-demand "refresh now"
+        rather than waiting for the next scheduled tick. Same
+        fetch -> normalize -> validate -> store pipeline as a normal
+        poll; the UNIQUE(source_id, guid) constraint means this is safe
+        to run as often as you like — it only ever adds genuinely new
+        items, never duplicates.
+        """
+        db = await get_db()
+        cur = await db.execute("SELECT * FROM sources WHERE enabled = 1")
+        sources = [dict(r) for r in await cur.fetchall()]
+        for src in sources:
+            await scheduler.poll_source(db, src)
+        await db.close()
+        return {"ok": True, "sources_polled": len(sources)}
+
     return poll_now
+
+
+# ------------------------------------------------------------- reprocessing
+
+class ReprocessIn(BaseModel):
+    source_id: str | None = None
+    deep_extraction: bool | None = None  # None = respect the current Settings toggle
+
+
+@router.post("/api/reprocess")
+async def reprocess(payload: ReprocessIn | None = None):
+    """
+    Re-runs severity/tagging/IOC extraction against items already on
+    disk — no RSS re-fetch, no network call to the source at all (only
+    to each item's own article page, if deep extraction is used). This
+    is what actually backfills vendors/actors/CVEs/etc. for items stored
+    before those extraction features existed; adding a database column
+    with a migration never retroactively computes values for old rows.
+    Can take a while on a large history with deep extraction on — it's a
+    foreground request deliberately (so the caller gets a real
+    processed/sources count back), not fired into the background.
+    """
+    payload = payload or ReprocessIn()
+    db = await get_db()
+    result = await reprocess_items(db, payload.source_id, payload.deep_extraction)
+    await db.close()
+    return result
 
 
 @router.websocket("/ws")

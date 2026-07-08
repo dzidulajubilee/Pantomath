@@ -16,6 +16,35 @@ async function toggleBookmark(itemId, bookmarked) {
   await fetch(`/api/items/${itemId}/bookmark?bookmarked=${bookmarked}`, { method: 'PATCH' });
 }
 
+/**
+ * Truncates at the end of the first complete sentence instead of an
+ * arbitrary character count, so cards read as a finished thought rather
+ * than cutting off mid-word. Falls back to a hard cut with an ellipsis
+ * only if no sentence-ending punctuation shows up within a reasonable
+ * window (some summaries are just one long run-on sentence or a
+ * fragment with no period at all).
+ */
+function truncateAtSentence(text, targetLen, maxLen) {
+  targetLen = targetLen || 220;
+  maxLen = maxLen || 320;
+  if (text.length <= targetLen) return text;
+
+  const window = text.slice(0, maxLen);
+  // Look for '.', '!', or '?' followed by a space/end-of-string — avoids
+  // stopping at abbreviation-style periods like "U.S." or "Inc." by
+  // requiring whitespace (or end of the window) right after it.
+  const sentenceEnd = /[.!?](?=\s|$)/g;
+  let match, lastGoodMatch = null;
+  while ((match = sentenceEnd.exec(window)) !== null) {
+    if (match.index + 1 >= targetLen * 0.5) {  // don't stop on a too-short first "sentence"
+      lastGoodMatch = match.index + 1;
+      break;  // first qualifying sentence end is what we want
+    }
+  }
+  if (lastGoodMatch) return text.slice(0, lastGoodMatch);
+  return text.slice(0, targetLen).trim() + '…';
+}
+
 function renderFeedCards(containerEl, items, opts) {
   opts = opts || {};
   if (items.length === 0) {
@@ -40,7 +69,7 @@ function renderFeedCards(containerEl, items, opts) {
           <span class="item-time">${timeAgo(i.fetched_at)}</span>
         </div>
         <div class="item-title"><a href="${i.link}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></div>
-        <div class="item-summary">${escapeHtml(stripHtml(i.summary)).slice(0,220)}</div>
+        <div class="item-summary">${escapeHtml(truncateAtSentence(stripHtml(i.summary)))}</div>
       </div>
       <div class="item-side">
         <span class="sev-pill sev-${i.severity}">${i.severity}</span>

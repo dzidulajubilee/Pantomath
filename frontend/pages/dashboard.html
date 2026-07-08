@@ -5,9 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pantomath // Threat Intel</title>
 <link rel="icon" href="/static/assets/icons/pantomath.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/themes/pantomath.css">
+<link rel="stylesheet" href="/static/themes/pantomath.css?v={{CACHEBUST}}">
 <script>
   // Applied before first paint so there's no flash of the wrong theme.
   (function(){
@@ -37,20 +35,20 @@
 
 <div class="app-shell">
   <nav class="nav-rail" id="navRail">
-    <button class="nav-item" data-view="dashboard"><span class="glyph">&#9635;</span>Dashboard</button>
-    <button class="nav-item" data-view="live-feed"><span class="glyph">&#9673;</span>Live Feed</button>
-    <button class="nav-item" data-view="critical"><span class="glyph">&#9888;</span>Critical</button>
-    <button class="nav-item" data-view="vulnerabilities"><span class="glyph">&#9670;</span>Vulnerabilities</button>
-    <button class="nav-item" data-view="malware"><span class="glyph">&#9737;</span>Malware</button>
-    <button class="nav-item" data-view="ransomware"><span class="glyph">&#128274;</span>Ransomware</button>
-    <button class="nav-item" data-view="threat-actors"><span class="glyph">&#9737;</span>Threat Actors</button>
-    <button class="nav-item" data-view="vendors"><span class="glyph">&#9635;</span>Vendors</button>
-    <button class="nav-item" data-view="iocs"><span class="glyph">&#9673;</span>IOCs</button>
-    <button class="nav-item" data-view="saved"><span class="glyph">&#9733;</span>Saved</button>
+    <button class="nav-item" data-view="dashboard"><span class="glyph icon-dashboard"></span>Dashboard</button>
+    <button class="nav-item" data-view="live-feed"><span class="glyph icon-live-feed"></span>Live Feed</button>
+    <button class="nav-item" data-view="critical"><span class="glyph icon-critical"></span>Critical</button>
+    <button class="nav-item" data-view="vulnerabilities"><span class="glyph icon-vulnerabilities"></span>Vulnerabilities</button>
+    <button class="nav-item" data-view="malware"><span class="glyph icon-malware"></span>Malware</button>
+    <button class="nav-item" data-view="ransomware"><span class="glyph icon-ransomware"></span>Ransomware</button>
+    <button class="nav-item" data-view="threat-actors"><span class="glyph icon-threat-actors"></span>Threat Actors</button>
+    <button class="nav-item" data-view="vendors"><span class="glyph icon-vendors"></span>Vendors</button>
+    <button class="nav-item" data-view="iocs"><span class="glyph icon-iocs"></span>IOCs</button>
+    <button class="nav-item" data-view="saved"><span class="glyph icon-saved"></span>Saved</button>
     <div class="nav-divider"></div>
-    <button class="nav-item" data-view="sources"><span class="glyph">&#9881;</span>Sources</button>
-    <button class="nav-item" data-view="analytics"><span class="glyph">&#9636;</span>Analytics</button>
-    <button class="nav-item" data-view="settings"><span class="glyph">&#9881;</span>Settings</button>
+    <button class="nav-item" data-view="sources"><span class="glyph icon-sources"></span>Sources</button>
+    <button class="nav-item" data-view="analytics"><span class="glyph icon-analytics"></span>Analytics</button>
+    <button class="nav-item" data-view="settings"><span class="glyph icon-settings"></span>Settings</button>
   </nav>
 
   <div style="min-width:0;">
@@ -115,10 +113,7 @@
         </div>
       </div>
       <div class="feed" id="liveFeed"></div>
-      <div style="text-align:center; margin-top:14px;">
-        <button class="btn" id="loadMoreBtn" style="display:none;">Load more</button>
-        <div id="feedEndHint" style="font-size:11.5px; color:var(--text-faint); display:none; padding:10px 0;">You've reached the beginning of stored history.</div>
-      </div>
+      <div class="pagination" id="liveFeedPagination"></div>
     </section>
 
     <!-- CATEGORY-FILTERED VIEWS (Critical / Vulnerabilities / Malware / Ransomware) -->
@@ -127,11 +122,11 @@
       <div class="feed" id="feedCritical"></div>
     </section>
     <section class="view" id="view-vulnerabilities">
-      <div class="view-head"><div><h2>Vulnerabilities</h2><div class="desc">Sources tagged as vulnerability / CVE feeds</div></div></div>
+      <div class="view-head"><div><h2>Vulnerabilities</h2><div class="desc">Articles containing a detected CVE, or from a source tagged as vulnerability/CVE</div></div></div>
       <div class="feed" id="feedVulnerabilities"></div>
     </section>
     <section class="view" id="view-malware">
-      <div class="view-head"><div><h2>Malware</h2><div class="desc">Sources tagged as malware / ransomware</div></div></div>
+      <div class="view-head"><div><h2>Malware</h2><div class="desc">Articles with a detected threat actor, or from a source tagged as malware/ransomware</div></div></div>
       <div class="feed" id="feedMalware"></div>
     </section>
     <section class="view" id="view-ransomware">
@@ -172,6 +167,7 @@
         <div class="panel">
           <h3 id="iocChartTitle">Top CVEs mentioned</h3>
           <div id="iocTopChart"></div>
+          <div class="pagination" id="iocTopChartPagination"></div>
         </div>
         <div class="panel">
           <h3>IOC type distribution</h3>
@@ -198,6 +194,7 @@
       <div class="view-head">
         <div><h2>Sources</h2><div class="desc">Add, pause, or remove RSS/Atom feeds</div></div>
         <div style="display:flex; gap:8px;">
+          <button class="btn" id="refreshAllBtn">Refresh all now</button>
           <button class="btn" id="exportSourcesBtn">Export</button>
           <button class="btn" id="importSourcesBtn">Import</button>
           <input type="file" id="importSourcesFile" accept="application/json" style="display:none;">
@@ -234,6 +231,10 @@
           <div><div class="settings-label">Default poll interval for new sources</div><div class="settings-hint">Applied as the default in the Add Source form</div></div>
           <input type="number" id="defaultInterval" value="300" min="60" style="width:90px; background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 8px; color:var(--text); font-family:var(--font-mono);">
         </div>
+        <div class="settings-row" style="border-bottom:none;">
+          <div><div class="settings-label">Deep extraction</div><div class="settings-hint">Fetches each new article's full page (not just the RSS teaser) for severity/vendor/threat-actor/IOC detection — RSS summaries are usually too short to contain real indicators. Slower on sources with many new items at once; fails silently back to teaser-only text on paywalls/timeouts. On by default.</div></div>
+          <div class="toggle-switch on" id="deepExtractionToggle"></div>
+        </div>
       </div>
 
       <div class="settings-section">
@@ -251,8 +252,20 @@
           </select>
         </div>
         <div class="settings-row" style="border-bottom:none;">
-          <div class="settings-hint" id="notifPermissionHint" style="max-width:520px;">Browser permission: <span id="notifPermissionState">unknown</span>. Desktop notifications only fire while this dashboard tab is open in your browser — Pantomath is a web app, not a native app, so there's no background/OS-level push when the tab is closed.</div>
+          <div class="settings-hint" id="notifPermissionHint" style="max-width:520px;">Browser permission: <span id="notifPermissionState">unknown</span>. Desktop notifications only fire while this dashboard tab is open in your browser, and require a secure connection (HTTPS, or "http://localhost") — browsers silently block the permission prompt on plain HTTP at any other address, with no dialog and no error shown. Pantomath is a web app, not a native app, so there's also no background/OS-level push when the tab is closed.</div>
         </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Webhooks</h4>
+        <div class="settings-row" style="border-bottom:none; padding-bottom:6px;">
+          <div><div class="settings-label">Alert via webhook</div><div class="settings-hint">Send a POST request when a new item matches a keyword, a specific source, and/or a minimum severity. Works over plain HTTP — unlike browser notifications, this doesn't need HTTPS.</div></div>
+          <button class="btn btn-primary" id="addWebhookBtn">+ Add Webhook</button>
+        </div>
+        <table class="sources-table">
+          <thead><tr><th>Name</th><th>Trigger</th><th>Status</th><th></th></tr></thead>
+          <tbody id="webhooksTableBody"></tbody>
+        </table>
       </div>
 
       <div class="settings-section">
@@ -270,6 +283,13 @@
         </div>
         <div class="settings-row">
           <div><div class="settings-label" id="storedRangeLabel">Currently stored: —</div><div class="settings-hint">Earliest to latest item on disk, and total count</div></div>
+        </div>
+        <div class="settings-row">
+          <div><div class="settings-label">Reprocess stored items</div><div class="settings-hint">Re-runs severity/vendor/threat-actor/IOC detection against everything already on disk, using the current parsing logic — no RSS re-fetch. Use this after an upgrade to backfill data for items stored before a detection feature existed. Can take a while with deep extraction on a large history.</div></div>
+          <button class="btn btn-primary" id="reprocessBtn">Reprocess all</button>
+        </div>
+        <div class="settings-row" style="border-bottom:none;">
+          <div class="settings-hint" id="reprocessResult"></div>
         </div>
         <div class="settings-row">
           <div><div class="settings-label">Backup database</div><div class="settings-hint">Downloads the raw SQLite file (/var/lib/pantomath/pantomath.db)</div></div>
@@ -295,7 +315,7 @@
 
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
-    <h3>Add feed source</h3>
+    <h3 id="modalTitle">Add feed source</h3>
     <div class="field">
       <label>Source type</label>
       <input type="text" value="RSS / Atom Feed" disabled style="opacity:0.6; cursor:not-allowed;">
@@ -336,11 +356,61 @@
   </div>
 </div>
 
-<script src="/static/components/icon.js"></script>
-<script src="/static/widgets/theme.js"></script>
-<script src="/static/widgets/notifications.js"></script>
-<script src="/static/widgets/charts.js"></script>
-<script src="/static/widgets/feed-list.js"></script>
-<script src="/static/widgets/app.js"></script>
+<div class="modal-overlay" id="webhookModalOverlay">
+  <div class="modal">
+    <h3 id="webhookModalTitle">Add webhook</h3>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="whName" placeholder="e.g. Slack #security-alerts">
+    </div>
+    <div class="field">
+      <label>Webhook URL</label>
+      <input type="text" id="whUrl" placeholder="https://hooks.slack.com/services/...">
+      <div class="hint">Sends a JSON POST with a "text" summary field (Slack/Discord-compatible) plus full structured data.</div>
+    </div>
+    <div class="field">
+      <label>Keyword filter <span style="text-transform:none;color:var(--text-faint)">(optional)</span></label>
+      <input type="text" id="whKeyword" placeholder="ransomware, zero-day, apache">
+      <div class="hint">Comma-separated. Matches if ANY keyword appears in the title or summary. Leave blank to match all keywords.</div>
+    </div>
+    <div class="field">
+      <label>Source filter <span style="text-transform:none;color:var(--text-faint)">(optional)</span></label>
+      <select id="whSource">
+        <option value="">Any source</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Minimum severity</label>
+      <select id="whMinSeverity">
+        <option value="">Any severity</option>
+        <option value="medium">Medium and above</option>
+        <option value="high">High only</option>
+      </select>
+    </div>
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal; font-size:12.5px; cursor:pointer;">
+        <input type="checkbox" id="whProtect" style="width:auto; margin:0;">
+        Protect this webhook with a key
+      </label>
+    </div>
+    <div class="field" id="whKeyField" style="display:none;">
+      <label>Key</label>
+      <input type="password" id="whKey" placeholder="Enter a key" autocomplete="new-password">
+      <div class="hint">There's no recovery if this is lost — you'd need to delete and re-add the webhook to reset it.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="cancelAddWebhook">Cancel</button>
+      <button class="btn btn-primary" id="confirmAddWebhook">Add webhook</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/components/icon.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/theme.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/notifications.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/charts.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/pagination.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/feed-list.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/app.js?v={{CACHEBUST}}"></script>
 </body>
 </html>

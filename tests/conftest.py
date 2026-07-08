@@ -28,6 +28,15 @@ async def fresh_db():
     await db.execute("DELETE FROM items")
     await db.execute("DELETE FROM sources")
     await db.execute("DELETE FROM settings")
+    await db.execute("DELETE FROM webhooks")
+    # deep_extraction defaults ON in production (it's what makes IOC
+    # extraction useful), but that means fetching each new item's link —
+    # tests that don't care about this feature use fake http://example.com
+    # style URLs as item links, which would otherwise mean every test run
+    # attempts real network calls. Off by default here; tests that
+    # specifically exercise deep extraction turn it on explicitly and use
+    # safe file:// URLs (see tests/test_rss_connector.py).
+    await db.execute("INSERT INTO settings (key, value) VALUES ('deep_extraction', '0')")
     await db.commit()
     await db.close()
     yield

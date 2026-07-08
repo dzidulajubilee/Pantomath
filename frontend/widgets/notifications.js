@@ -25,9 +25,31 @@ function saveNotifPrefs(enabled, threshold) {
 function updatePermissionHint() {
   const el = document.getElementById('notifPermissionState');
   if (!el) return;
-  const state = ('Notification' in window) ? Notification.permission : 'unsupported';
+  if (!('Notification' in window)) {
+    el.textContent = 'unsupported by this browser';
+    el.style.color = 'var(--text-dim)';
+    return;
+  }
+  if (!window.isSecureContext) {
+    // Browsers block the Notification permission prompt entirely on
+    // insecure origins (plain HTTP at anything other than localhost) —
+    // requestPermission() silently resolves to "denied" with no dialog
+    // ever shown. This is a browser policy, not something fixable in JS.
+    el.textContent = 'blocked — insecure connection (see note below)';
+    el.style.color = 'var(--amber)';
+    return;
+  }
+  const state = Notification.permission;
   el.textContent = state;
   el.style.color = state === 'granted' ? 'var(--signal)' : (state === 'denied' ? 'var(--red)' : 'var(--text-dim)');
+}
+
+function insecureContextWarning() {
+  const isIpAddress = /^(\d{1,3}\.){3}\d{1,3}$/.test(location.hostname);
+  const suggestion = isIpAddress
+    ? `Try accessing this dashboard as "http://localhost:${location.port}" if you're on the same machine Pantomath runs on, or put it behind HTTPS (a reverse proxy like Caddy/nginx with a certificate) for remote access.`
+    : `Access this dashboard over HTTPS, or as "http://localhost:${location.port}" if you're on the same machine Pantomath runs on.`;
+  return `Desktop notifications require a secure connection. This page is loaded over plain HTTP at "${location.hostname}", which isn't localhost or HTTPS — browsers block the notification permission prompt entirely on insecure origins, so no dialog will ever appear here no matter how many times you click this toggle. ${suggestion}`;
 }
 
 async function initNotificationControls() {
@@ -35,7 +57,7 @@ async function initNotificationControls() {
   const toggle = document.getElementById('notifToggle');
   const thresholdSelect = document.getElementById('notifThreshold');
 
-  toggle.classList.toggle('on', enabled && Notification.permission === 'granted');
+  toggle.classList.toggle('on', enabled && ('Notification' in window) && Notification.permission === 'granted');
   thresholdSelect.value = threshold;
   updatePermissionHint();
 
@@ -46,10 +68,14 @@ async function initNotificationControls() {
     }
     const turningOn = !toggle.classList.contains('on');
     if (turningOn) {
+      if (!window.isSecureContext) {
+        alert(insecureContextWarning());
+        return;
+      }
       const permission = await Notification.requestPermission();
       updatePermissionHint();
       if (permission !== 'granted') {
-        alert('Notification permission was not granted — check your browser\'s site settings.');
+        alert('Notification permission was not granted — check your browser\'s site settings for this page.');
         return;
       }
       saveNotifPrefs(true, thresholdSelect.value);

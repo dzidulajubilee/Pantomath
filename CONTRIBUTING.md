@@ -49,6 +49,32 @@ Please add tests for new behavior, especially anything touching:
 - API endpoints that have broken before (`tests/test_api_integration.py`)
   — fresh installs starting with zero sources is a real regression this
   project shipped once; there's a test guarding it specifically.
+- adding a new view/nav item to the frontend — `tests/test_frontend_
+  view_consistency.py` guards against a real shipped bug where a view
+  was wired into `VIEW_LOADERS` (so its data loaded fine) but missing
+  from the `VIEWS` array that controls which section actually becomes
+  visible, resulting in a permanently blank page with zero JS errors.
+  If you add a new view, make sure it's in `VIEWS`, `VIEW_LOADERS`, has
+  an `id="view-<name>"` section, and a nav button with a matching
+  `data-view` — the test checks all four are consistent with each other.
+
+When a frontend bug doesn't show up in a plain `pytest` run (nothing to
+run — there's no JS test runner in this project by default), and static
+review of the code isn't conclusive, install `jsdom` (`npm install
+jsdom`) and actually load the real served page in a headless DOM,
+polyfilling `fetch`/`WebSocket` since jsdom doesn't provide them:
+```js
+const { JSDOM } = require('jsdom');
+const dom = await JSDOM.fromURL('http://127.0.0.1:PORT/', {
+  runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true,
+});
+dom.window.fetch = (url, opts) => fetch(url.startsWith('http') ? url : 'http://127.0.0.1:PORT' + url, opts);
+dom.window.WebSocket = class { constructor() { this.readyState = 3; } close() {} };
+```
+This is how the `VIEWS`/`VIEW_LOADERS` bug above was actually found — a
+real click on the real nav button against the real running server,
+checking the real resulting `classList` state, rather than reasoning
+about the routing code in the abstract.
 
 ## Linting
 

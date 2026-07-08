@@ -257,24 +257,42 @@ async function loadThreatActors() {
 const IOC_TYPE_LABELS = { cve: 'CVEs', ip: 'IP Addresses', hash: 'Hashes', email: 'Emails' };
 const IOC_TYPE_COLORS = { cve: '#5eead4', ip: '#60a5fa', hash: '#a78bfa', email: '#34d399' };
 let currentIocType = 'cve';
+let iocCurrentPage = 1;
+const IOC_PAGE_SIZE = 10;
+// The count of the single most-mentioned IOC of the current type (i.e.
+// page 1's top row). Bars are scaled against this fixed value on every
+// page rather than each page's own max, so a page of low-count IOCs
+// doesn't render as visually "maxed out" as if it were as significant
+// as the most-mentioned IOC overall.
+let iocMaxCount = 1;
 // The currently open "Articles containing…" drilldown, if any ({ type, value }).
 // Tracked at module level (same pattern as currentIocType/liveCurrentPage/etc.)
 // so an auto-refresh of this view — a WebSocket new_items broadcast or the
 // 30s poll in init() — can restore it instead of always closing it.
 let iocDrilldown = null;
 
-async function loadIOCsView() {
+async function loadIOCsView(page = iocCurrentPage) {
+  iocCurrentPage = page;
   document.querySelectorAll('.ioc-type-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.iocType === currentIocType);
   });
   document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned`;
 
-  const top = await (await fetch(`/api/iocs?type=${currentIocType}&limit=10`)).json();
+  const offset = (iocCurrentPage - 1) * IOC_PAGE_SIZE;
+  const [top, summary] = await Promise.all([
+    fetch(`/api/iocs?type=${currentIocType}&limit=${IOC_PAGE_SIZE}&offset=${offset}`).then(r => r.json()),
+    fetch('/api/iocs/summary').then(r => r.json()),
+  ]);
+
+  if (iocCurrentPage === 1) iocMaxCount = top.length ? top[0].count : 1;
+
   renderBarChart(document.getElementById('iocTopChart'),
     top.map(t => ({ label: t.name, count: t.count })),
-    { colorFn: () => IOC_TYPE_COLORS[currentIocType], onClick: (value) => showIocArticles(currentIocType, value) });
+    { colorFn: () => IOC_TYPE_COLORS[currentIocType], onClick: (value) => showIocArticles(currentIocType, value), max: iocMaxCount });
 
-  const summary = await (await fetch('/api/iocs/summary')).json();
+  const totalPages = Math.max(1, Math.ceil((summary[currentIocType] || 0) / IOC_PAGE_SIZE));
+  renderPagination(document.getElementById('iocTopChartPagination'), iocCurrentPage, totalPages, (p) => loadIOCsView(p));
+
   renderDonutChart(document.getElementById('iocDonutWrap'),
     Object.entries(IOC_TYPE_LABELS).map(([type, label]) => ({
       label, count: summary[type] || 0, color: IOC_TYPE_COLORS[type],
@@ -293,7 +311,7 @@ async function loadIOCsView() {
 }
 
 document.querySelectorAll('.ioc-type-btn').forEach(btn => {
-  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; loadIOCsView(); };
+  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; iocCurrentPage = 1; loadIOCsView(); };
 });
 
 async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
@@ -373,7 +391,7 @@ async function loadWebhooksTable() {
     const statusOk = w.last_status && w.last_status.startsWith('ok');
     return `
       <tr>
-        <td>${escapeHtml(w.name)}</td>
+        <td>${w.protected ? '🔒 ' : ''}${escapeHtml(w.name)}</td>
         <td style="color:var(--text-dim); font-size:11.5px;">${escapeHtml(trigger)}</td>
         <td>
           <span class="status-badge status-${w.last_status === 'pending' ? 'pending' : (statusOk ? 'ok' : 'error')}"></span>
@@ -405,28 +423,61 @@ async function loadWebhooksTable() {
     };
   });
   tbody.querySelectorAll('[data-action="edit-webhook"]').forEach(btn => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const webhook = webhooks.find(w => w.id === btn.dataset.id);
-      if (webhook) openWebhookModal(webhook);
+      if (!webhook) return;
+      const unlock = await unlockProtectedWebhook(webhook);
+      if (!unlock.ok) return;
+      openWebhookModal({ ...webhook, url: unlock.url }, unlock.key);
     };
   });
   tbody.querySelectorAll('[data-action="toggle-webhook"]').forEach(btn => {
     btn.onclick = async () => {
+      const webhook = webhooks.find(w => w.id === btn.dataset.id);
+      if (!webhook) return;
+      const unlock = await unlockProtectedWebhook(webhook);
+      if (!unlock.ok) return;
+      const body = { enabled: btn.dataset.enabled !== 'true' };
+      if (unlock.key) body.key = unlock.key;
       await fetch(`/api/webhooks/${btn.dataset.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: btn.dataset.enabled !== 'true' }),
+        body: JSON.stringify(body),
       });
       await loadWebhooksTable();
     };
   });
   tbody.querySelectorAll('[data-action="delete-webhook"]').forEach(btn => {
     btn.onclick = async () => {
+      // Deletion is intentionally never key-gated — for a protected webhook,
+      // it's the documented fallback when the key is lost.
       if (confirm('Remove this webhook?')) {
         await fetch(`/api/webhooks/${btn.dataset.id}`, { method: 'DELETE' });
         await loadWebhooksTable();
       }
     };
   });
+}
+
+// Prompts for a protected webhook's key and verifies it via /reveal in one
+// round trip (which also hands back the real URL) — reused by both "Edit"
+// and the pause/resume toggle, since a protected webhook requires its key
+// for any change, not only for viewing the URL. Unprotected webhooks skip
+// the prompt entirely.
+async function unlockProtectedWebhook(webhook) {
+  if (!webhook.protected) return { ok: true, key: null, url: webhook.url };
+  const key = prompt(`Enter the key for "${webhook.name}" to continue:`);
+  if (key === null) return { ok: false };
+  const res = await fetch(`/api/webhooks/${webhook.id}/reveal`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert('Failed: ' + (err.detail || 'Incorrect key'));
+    return { ok: false };
+  }
+  const { url } = await res.json();
+  return { ok: true, key, url };
 }
 
 document.getElementById('retentionSelect').addEventListener('change', async (e) => {
@@ -634,10 +685,22 @@ document.getElementById('srcInterval').addEventListener('focus', function () {
 // -------------------------------------------------------------- add/edit-webhook modal
 
 const webhookModal = document.getElementById('webhookModalOverlay');
+const whProtectCheckbox = document.getElementById('whProtect');
+const whKeyField = document.getElementById('whKeyField');
+const whKeyInput = document.getElementById('whKey');
 let editingWebhookId = null;
+// The key just verified (via unlockProtectedWebhook) for the webhook currently
+// open in the modal, if any — reused to authorize the PATCH on Save so the
+// person isn't asked to type it twice in one edit.
+let editingWebhookKey = null;
 
-function openWebhookModal(webhook) {
+whProtectCheckbox.onchange = () => {
+  whKeyField.style.display = whProtectCheckbox.checked ? 'block' : 'none';
+};
+
+function openWebhookModal(webhook, verifiedKey = null) {
   editingWebhookId = webhook ? webhook.id : null;
+  editingWebhookKey = verifiedKey;
   document.getElementById('webhookModalTitle').textContent = webhook ? 'Edit webhook' : 'Add webhook';
   document.getElementById('confirmAddWebhook').textContent = webhook ? 'Save changes' : 'Add webhook';
 
@@ -650,9 +713,17 @@ function openWebhookModal(webhook) {
   document.getElementById('whKeyword').value = webhook ? webhook.keyword : '';
   document.getElementById('whSource').value = webhook ? webhook.source_id : '';
   document.getElementById('whMinSeverity').value = webhook ? webhook.min_severity : '';
+  whProtectCheckbox.checked = webhook ? !!webhook.protected : false;
+  whKeyInput.value = '';
+  whKeyInput.placeholder = (webhook && webhook.protected) ? 'Leave blank to keep the current key' : 'Enter a key';
+  whKeyField.style.display = whProtectCheckbox.checked ? 'block' : 'none';
   webhookModal.classList.add('open');
 }
-function closeWebhookModal() { webhookModal.classList.remove('open'); editingWebhookId = null; }
+function closeWebhookModal() {
+  webhookModal.classList.remove('open');
+  editingWebhookId = null;
+  editingWebhookKey = null;
+}
 document.getElementById('addWebhookBtn').onclick = () => openWebhookModal(null);
 document.getElementById('cancelAddWebhook').onclick = closeWebhookModal;
 webhookModal.onclick = (e) => { if (e.target === webhookModal) closeWebhookModal(); };
@@ -663,12 +734,30 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
   const keyword = document.getElementById('whKeyword').value.trim();
   const source_id = document.getElementById('whSource').value;
   const min_severity = document.getElementById('whMinSeverity').value;
+  const wantsProtection = whProtectCheckbox.checked;
+  const keyInput = whKeyInput.value;
   if (!name || !url) { alert('Name and webhook URL are required'); return; }
 
   const isEditing = !!editingWebhookId;
+  const body = { name, url, keyword, source_id, min_severity };
+  if (!isEditing) body.enabled = true;
+
+  if (wantsProtection) {
+    if (keyInput) {
+      body[isEditing ? 'set_key' : 'key'] = keyInput;
+    } else if (!isEditing) {
+      alert('Enter a key to protect this webhook, or leave the checkbox unchecked.');
+      return;
+    }
+    // else: editing an already-protected webhook, key left blank => keep the existing key
+  } else if (isEditing) {
+    body.remove_protection = true;
+  }
+  if (isEditing && editingWebhookKey) body.key = editingWebhookKey;
+
   const res = await fetch(isEditing ? `/api/webhooks/${editingWebhookId}` : '/api/webhooks', {
     method: isEditing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, url, keyword, source_id, min_severity }),
+    body: JSON.stringify(body),
   });
   if (res.ok) {
     document.getElementById('whName').value = '';
@@ -676,6 +765,9 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
     document.getElementById('whKeyword').value = '';
     document.getElementById('whSource').value = '';
     document.getElementById('whMinSeverity').value = '';
+    whProtectCheckbox.checked = false;
+    whKeyInput.value = '';
+    whKeyField.style.display = 'none';
     closeWebhookModal();
     await loadWebhooksTable();
   } else {

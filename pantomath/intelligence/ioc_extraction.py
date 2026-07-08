@@ -34,15 +34,22 @@ def extract_iocs(title: str, summary: str) -> dict[str, list[str]]:
 
     cves = list(dict.fromkeys(m.upper() for m in CVE_PATTERN.findall(text)))
     ips = list(dict.fromkeys(m for m in IPV4_PATTERN.findall(text) if m not in _IP_NOISE))
-    emails = list(dict.fromkeys(EMAIL_PATTERN.findall(text)))
+    # Local-part is technically case-sensitive per RFC 5321, but every real
+    # mailbox provider treats it as case-insensitive in practice, and leaving
+    # case untouched here let the same address masquerade as two "distinct"
+    # IOCs whenever a source happened to capitalize it differently.
+    emails = list(dict.fromkeys(m.lower() for m in EMAIL_PATTERN.findall(text)))
 
     # Hashes: check the longer patterns first so a 64-char SHA256 isn't
-    # also reported as containing a 32-char MD5 substring match.
-    hashes = list(dict.fromkeys(SHA256_PATTERN.findall(text)))
-    matched_spans = {h for h in hashes}
-    hashes += [h for h in SHA1_PATTERN.findall(text) if h not in matched_spans]
+    # also reported as containing a 32-char MD5 substring match. Lowercased
+    # for the same reason as emails above — hex hashes are case-insensitive,
+    # so normalize before dedup or "ABCD..." and "abcd..." count as two
+    # distinct IOCs instead of one seen twice.
+    hashes = list(dict.fromkeys(h.lower() for h in SHA256_PATTERN.findall(text)))
+    matched_spans = set(hashes)
+    hashes += [h.lower() for h in SHA1_PATTERN.findall(text) if h.lower() not in matched_spans]
     matched_spans.update(hashes)
-    hashes += [h for h in MD5_PATTERN.findall(text) if h not in matched_spans]
+    hashes += [h.lower() for h in MD5_PATTERN.findall(text) if h.lower() not in matched_spans]
     hashes = list(dict.fromkeys(hashes))
 
     return {"cve": cves, "ip": ips, "hash": hashes, "email": emails}

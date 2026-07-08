@@ -134,6 +134,45 @@ def test_iocs_endpoint_rejects_unknown_type():
     assert resp.status_code == 400
 
 
+async def test_iocs_endpoint_paginates_through_all_distinct_values():
+    """
+    Regression test: the IOCs page's 'Top N mentioned' list used to
+    hardcode limit=10 with no way to reach the rest — a real install
+    with 232 distinct CVEs only ever showed 10 of them, no matter what
+    the donut's 'distinct IOCs' total said. offset+limit lets the
+    frontend page through everything; the ranking must also be
+    deterministic (count desc, name asc) so items don't reshuffle
+    between page requests.
+    """
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO sources (id, name, url, category) VALUES ('s4', 'Feed', 'http://p.com/feed', 'news')"
+    )
+    # 3 distinct CVEs mentioned in 3/2/1 items respectively, so ranking is unambiguous.
+    for i, cve in enumerate(
+        ["CVE-2026-0001", "CVE-2026-0001", "CVE-2026-0001", "CVE-2026-0002", "CVE-2026-0002", "CVE-2026-0003"]
+    ):
+        await db.execute(
+            "INSERT INTO items (id, source_id, title, guid, fetched_at, cves) VALUES (?, 's4', ?, ?, ?, ?)",
+            (f"i4{i}", f"title {i}", f"g4{i}", 1000 + i, cve),
+        )
+    await db.commit()
+    await db.close()
+
+    page1 = client.get("/api/iocs?type=cve&limit=2&offset=0").json()
+    assert page1 == [{"name": "CVE-2026-0001", "count": 3}, {"name": "CVE-2026-0002", "count": 2}]
+
+    page2 = client.get("/api/iocs?type=cve&limit=2&offset=2").json()
+    assert page2 == [{"name": "CVE-2026-0003", "count": 1}]
+
+    # The summary's distinct count is what the frontend uses to compute
+    # page count — it needs to agree with how many rows actually paginate.
+    summary = client.get("/api/iocs/summary").json()
+    assert summary["cve"] == 3
+
+
 def test_items_ioc_filter_rejects_unknown_type():
     resp = client.get("/api/items?ioc_type=bogus&ioc_value=x")
     assert resp.status_code == 400

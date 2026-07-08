@@ -14,7 +14,7 @@ function renderBarChart(containerEl, data, opts) {
     containerEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);padding:8px 0;">No data yet</div>`;
     return;
   }
-  const max = Math.max(...data.map(d => d.count), 1);
+  const max = opts.max || Math.max(...data.map(d => d.count), 1);
   const clickable = typeof opts.onClick === 'function';
   containerEl.innerHTML = data.map(d => `
     <div class="bar-row" ${clickable ? `data-label="${d.label}" style="cursor:pointer;"` : ''}>

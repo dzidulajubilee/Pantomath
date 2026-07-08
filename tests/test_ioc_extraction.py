@@ -44,6 +44,17 @@ def test_extracts_email():
     assert "phisher@malicious-domain.com" in iocs["email"]
 
 
+def test_hash_case_insensitive_deduped_and_lowercased():
+    md5 = "d41d8cd98f00b204e9800998ecf8427e"
+    iocs = extract_iocs(f"Sample hash {md5} also seen as {md5.upper()}", "")
+    assert iocs["hash"] == [md5]
+
+
+def test_email_case_insensitive_deduped_and_lowercased():
+    iocs = extract_iocs("From Phisher@Malicious-Domain.com to phisher@malicious-domain.com", "")
+    assert iocs["email"] == ["phisher@malicious-domain.com"]
+
+
 def test_no_false_positives_on_clean_text():
     iocs = extract_iocs("Routine software update released", "no security impact, nothing notable")
     assert iocs == {"cve": [], "ip": [], "hash": [], "email": []}

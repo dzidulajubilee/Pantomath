@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
+from pantomath.alerts.webhook_keys import check_and_consume_attempt, hash_key, mask_url, new_salt
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
 from pantomath.database.sqlite import DB_PATH, get_db
 from pantomath.intelligence.enrichment import (
@@ -415,8 +416,19 @@ _IOC_COLUMNS = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}
 
 
 @router.get("/api/iocs")
-async def list_iocs(type: str = "cve", limit: int = 20):
-    """Distinct IOCs of one type with occurrence counts — powers the IOCs page's bar chart and chip list."""
+async def list_iocs(type: str = "cve", limit: int = 20, offset: int = 0):
+    """
+    Distinct IOCs of one type with occurrence counts, paginated —
+    powers the IOCs page's bar chart and chip list. `offset` lets the
+    frontend page through every distinct IOC of a type instead of only
+    ever seeing the top `limit`; pair with GET /api/iocs/summary's
+    per-type distinct count to know how many pages exist.
+
+    Ranked by count descending, then by name ascending as a tiebreaker
+    — without a deterministic tiebreak, IOCs with equal counts could
+    silently swap pages between requests (dict ordering isn't a
+    stable ranking), which would be confusing while paginating.
+    """
     col = _IOC_COLUMNS.get(type)
     if not col:
         raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
@@ -429,8 +441,9 @@ async def list_iocs(type: str = "cve", limit: int = 20):
         for value in row[0].split(","):
             if value:
                 counts[value] = counts.get(value, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    return [{"name": name, "count": count} for name, count in ranked]
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    page = ranked[offset:offset + limit]
+    return [{"name": name, "count": count} for name, count in page]
 
 
 @router.get("/api/iocs/summary")
@@ -566,13 +579,24 @@ class WebhookIn(BaseModel):
     source_id: str = ""
     min_severity: str = ""
     enabled: bool = True
+    key: str | None = None  # optional — if set, this webhook is protected from creation
+
+
+def _serialize_webhook(row: dict) -> dict:
+    """Never sends key_hash/key_salt/attempt-tracking to the client, and
+    masks the URL for protected webhooks — the whole point of protecting
+    one is that loading the Settings page shouldn't hand out the real URL."""
+    out = {k: v for k, v in row.items() if k not in ("key_hash", "key_salt", "key_fail_count", "key_locked_until")}
+    if row.get("protected"):
+        out["url"] = mask_url(row["url"])
+    return out
 
 
 @router.get("/api/webhooks")
 async def list_webhooks():
     db = await get_db()
     cur = await db.execute("SELECT * FROM webhooks ORDER BY name")
-    rows = [dict(r) for r in await cur.fetchall()]
+    rows = [_serialize_webhook(dict(r)) for r in await cur.fetchall()]
     await db.close()
     return rows
 
@@ -581,13 +605,21 @@ async def list_webhooks():
 async def add_webhook(webhook: WebhookIn):
     if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high"):
         raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+    if webhook.key is not None and not webhook.key.strip():
+        raise HTTPException(400, "Webhook key can't be blank")
+
     db = await get_db()
     wid = str(uuid.uuid4())
+    protected, key_salt, key_hash = 0, None, None
+    if webhook.key:
+        salt = new_salt()
+        protected, key_salt, key_hash = 1, salt.hex(), hash_key(webhook.key, salt)
+
     await db.execute(
-        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled)
-           VALUES (?,?,?,?,?,?,?)""",
+        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (wid, webhook.name, webhook.url, webhook.keyword, webhook.source_id,
-         webhook.min_severity, int(webhook.enabled)),
+         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash),
     )
     await db.commit()
     await db.close()
@@ -601,19 +633,36 @@ class WebhookEditIn(BaseModel):
     source_id: str | None = None
     min_severity: str | None = None
     enabled: bool | None = None
+    key: str | None = None            # current key — required to authorize any change to an already-protected webhook
+    set_key: str | None = None        # sets a new key: adds protection if there wasn't any, or changes the existing one
+    remove_protection: bool = False   # drops protection entirely (still requires the current `key`)
+
+
+class WebhookKeyIn(BaseModel):
+    key: str
 
 
 @router.patch("/api/webhooks/{webhook_id}")
 async def update_webhook(webhook_id: str, payload: WebhookEditIn):
-    """Partial update, same pattern as sources — only fields present in the body are changed."""
+    """Partial update, same pattern as sources — only fields present in the body are changed.
+    A protected webhook requires the correct `key` before anything about it
+    can change, including removing the protection itself."""
     if payload.min_severity and payload.min_severity not in ("low", "medium", "high"):
         raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
 
     db = await get_db()
-    cur = await db.execute("SELECT id FROM webhooks WHERE id = ?", (webhook_id,))
-    if not await cur.fetchone():
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    row = await cur.fetchone()
+    if not row:
         await db.close()
         raise HTTPException(404, "webhook not found")
+    row = dict(row)
+
+    if row.get("protected"):
+        ok, err = await check_and_consume_attempt(db, row, payload.key or "")
+        if not ok:
+            await db.close()
+            raise HTTPException(401, err)
 
     updates: dict = {}
     for field in ("name", "url", "keyword", "source_id", "min_severity"):
@@ -623,12 +672,49 @@ async def update_webhook(webhook_id: str, payload: WebhookEditIn):
     if payload.enabled is not None:
         updates["enabled"] = int(payload.enabled)
 
+    if payload.set_key is not None:
+        if not payload.set_key.strip():
+            await db.close()
+            raise HTTPException(400, "Webhook key can't be blank")
+        salt = new_salt()
+        updates.update(
+            protected=1, key_salt=salt.hex(), key_hash=hash_key(payload.set_key, salt),
+            key_fail_count=0, key_locked_until=0,
+        )
+    elif payload.remove_protection:
+        updates.update(protected=0, key_salt=None, key_hash=None, key_fail_count=0, key_locked_until=0)
+
     if updates:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         await db.execute(f"UPDATE webhooks SET {set_clause} WHERE id = ?", [*updates.values(), webhook_id])
         await db.commit()
     await db.close()
     return {"ok": True}
+
+
+@router.post("/api/webhooks/{webhook_id}/reveal")
+async def reveal_webhook_url(webhook_id: str, payload: WebhookKeyIn):
+    """Returns the real URL for a webhook. Unprotected webhooks return it
+    immediately; protected ones require the correct key. This — plus
+    deleting and recreating — is the only way to see a protected webhook's
+    full URL again."""
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
+    row = await cur.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(404, "webhook not found")
+    row = dict(row)
+
+    if not row.get("protected"):
+        await db.close()
+        return {"url": row["url"]}
+
+    ok, err = await check_and_consume_attempt(db, row, payload.key)
+    await db.close()
+    if not ok:
+        raise HTTPException(401, err)
+    return {"url": row["url"]}
 
 
 @router.delete("/api/webhooks/{webhook_id}")

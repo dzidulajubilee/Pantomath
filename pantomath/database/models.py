@@ -59,7 +59,12 @@ CREATE TABLE IF NOT EXISTS webhooks (
     min_severity TEXT DEFAULT '',  -- 'low'/'medium'/'high'; empty = any severity
     created_at REAL DEFAULT (strftime('%s','now')),
     last_triggered REAL DEFAULT 0,
-    last_status TEXT DEFAULT 'pending'
+    last_status TEXT DEFAULT 'pending',
+    protected INTEGER DEFAULT 0,     -- opt-in per-webhook: 1 if a key gates viewing the real URL / editing
+    key_salt TEXT,                   -- hex-encoded random salt, NULL unless protected
+    key_hash TEXT,                   -- salted PBKDF2 hash of the key — the plaintext key is never stored
+    key_fail_count INTEGER DEFAULT 0,
+    key_locked_until REAL DEFAULT 0  -- unix timestamp; failed-attempt lockout for the key, see pantomath/alerts/webhook_keys.py
 );
 """
 
@@ -81,4 +86,9 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("items", "ips", "TEXT DEFAULT ''"),
     ("items", "hashes", "TEXT DEFAULT ''"),
     ("items", "emails", "TEXT DEFAULT ''"),
+    ("webhooks", "protected", "INTEGER DEFAULT 0"),
+    ("webhooks", "key_salt", "TEXT"),
+    ("webhooks", "key_hash", "TEXT"),
+    ("webhooks", "key_fail_count", "INTEGER DEFAULT 0"),
+    ("webhooks", "key_locked_until", "REAL DEFAULT 0"),
 ]

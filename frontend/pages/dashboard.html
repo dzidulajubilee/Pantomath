@@ -167,6 +167,7 @@
         <div class="panel">
           <h3 id="iocChartTitle">Top CVEs mentioned</h3>
           <div id="iocTopChart"></div>
+          <div class="pagination" id="iocTopChartPagination"></div>
         </div>
         <div class="panel">
           <h3>IOC type distribution</h3>
@@ -385,6 +386,17 @@
         <option value="medium">Medium and above</option>
         <option value="high">High only</option>
       </select>
+    </div>
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal; font-size:12.5px; cursor:pointer;">
+        <input type="checkbox" id="whProtect" style="width:auto; margin:0;">
+        Protect this webhook with a key
+      </label>
+    </div>
+    <div class="field" id="whKeyField" style="display:none;">
+      <label>Key</label>
+      <input type="password" id="whKey" placeholder="Enter a key" autocomplete="new-password">
+      <div class="hint">There's no recovery if this is lost — you'd need to delete and re-add the webhook to reset it.</div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="cancelAddWebhook">Cancel</button>

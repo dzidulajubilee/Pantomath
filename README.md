@@ -183,3 +183,27 @@ make test    # pytest — 34 tests covering dedup, tagging, connector registry, 
 make lint    # ruff check
 make fmt     # ruff check --fix + format
 ```
+
+## Previews
+
+### Dashboard
+
+<img width="1920" height="754" alt="Screenshot from 2026-07-06 17-08-37" src="https://github.com/user-attachments/assets/2db27d7e-5792-405a-88eb-38facafffe47" />
+
+
+<img width="1920" height="907" alt="Screenshot from 2026-07-06 17-08-58" src="https://github.com/user-attachments/assets/50a86854-114c-44fa-880b-6a1da19d4870" />
+
+### Feed Source Management
+
+<img width="1920" height="907" alt="Screenshot from 2026-07-06 17-09-20" src="https://github.com/user-attachments/assets/a4f3b76d-27f5-4d60-ac4c-fb27bc386084" />
+
+
+### IOCs
+
+<img width="1920" height="907" alt="Screenshot from 2026-07-07 17-33-47" src="https://github.com/user-attachments/assets/1c26694a-1740-4194-9c82-26392eb5ff2c" />
+
+### Settings
+
+<img width="1920" height="907" alt="Screenshot from 2026-07-07 17-33-10" src="https://github.com/user-attachments/assets/29f1eb38-1769-4367-a3c7-7bca1ffcf2b4" />
+
+

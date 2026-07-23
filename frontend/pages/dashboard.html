@@ -155,7 +155,7 @@
     <!-- IOCS -->
     <section class="view" id="view-iocs">
       <div class="view-head">
-        <div><h2>Indicators of Compromise</h2><div class="desc">Rule-based extraction of CVEs, IPs, hashes &amp; emails from stored articles — click one to see related coverage</div></div>
+        <div><h2>Indicators of Compromise</h2><div class="desc">Rule-based extraction of CVEs, IPs, hashes &amp; emails from stored articles — click one to see related coverage, or click a day on the calendar to see everything from that date</div></div>
       </div>
       <div class="ioc-type-selector" id="iocTypeSelector">
         <button class="ioc-type-btn active" data-ioc-type="cve">CVEs</button>
@@ -165,14 +165,21 @@
       </div>
       <div class="panel-grid">
         <div class="panel">
-          <h3 id="iocChartTitle">Top CVEs mentioned</h3>
-          <div id="iocTopChart"></div>
-          <div class="pagination" id="iocTopChartPagination"></div>
+          <div class="ioc-calendar-head">
+            <h3>Activity calendar</h3>
+            <button class="btn" id="iocClearDateBtn" style="display:none;">Clear date &times;</button>
+          </div>
+          <div id="iocCalendar"></div>
         </div>
         <div class="panel">
           <h3>IOC type distribution</h3>
           <div id="iocDonutWrap"></div>
         </div>
+      </div>
+      <div class="panel">
+        <h3 id="iocChartTitle">Top CVEs mentioned</h3>
+        <div id="iocTopChart"></div>
+        <div class="pagination" id="iocTopChartPagination"></div>
       </div>
       <div class="panel" id="iocArticlesPanel" style="display:none;">
         <h3 id="iocArticlesTitle">Articles containing —</h3>
@@ -296,6 +303,16 @@
           <button class="btn" id="backupBtn">Download backup</button>
         </div>
         <div class="settings-row">
+          <div><div class="settings-label">Restore database</div><div class="settings-hint">Replaces ALL current data (items, sources, settings, webhooks) with a previously downloaded backup file. A safety copy of what's currently live is made automatically before the swap.</div></div>
+          <div>
+            <input type="file" id="restoreFileInput" accept=".db" style="display:none;" />
+            <button class="btn" id="restoreBtn">Restore from file&hellip;</button>
+          </div>
+        </div>
+        <div class="settings-row" style="border-bottom:none;">
+          <div class="settings-hint" id="restoreResult"></div>
+        </div>
+        <div class="settings-row">
           <div><div class="settings-label">Export sources</div><div class="settings-hint">Save your source list as JSON</div></div>
           <button class="btn" id="settingsExportBtn">Export sources.json</button>
         </div>
@@ -389,6 +406,13 @@
     </div>
     <div class="field">
       <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal; font-size:12.5px; cursor:pointer;">
+        <input type="checkbox" id="whInsecureTls" style="width:auto; margin:0;">
+        Allow self-signed / untrusted certificates
+      </label>
+      <div class="hint">Skips TLS certificate verification for this webhook (https:// only). Only enable this for endpoints you trust, such as an internal server with a self-signed cert — it removes protection against man-in-the-middle tampering on this connection.</div>
+    </div>
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal; font-size:12.5px; cursor:pointer;">
         <input type="checkbox" id="whProtect" style="width:auto; margin:0;">
         Protect this webhook with a key
       </label>
@@ -409,6 +433,7 @@
 <script src="/static/widgets/theme.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/notifications.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/charts.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/calendar.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/pagination.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/feed-list.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/app.js?v={{CACHEBUST}}"></script>

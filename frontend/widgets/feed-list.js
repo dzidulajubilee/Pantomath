@@ -68,14 +68,14 @@ function renderFeedCards(containerEl, items, opts) {
           ${(i.cves||[]).slice(0,2).map(c => `<span class="tag-chip" style="padding:2px 8px; margin:0; color:var(--signal); border-color:var(--signal);">${escapeHtml(c)}</span>`).join('')}
           <span class="item-time">${timeAgo(i.fetched_at)}</span>
         </div>
-        <div class="item-title"><a href="${i.link}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></div>
+        <div class="item-title"><a href="${safeHref(i.link)}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></div>
         <div class="item-summary">${escapeHtml(truncateAtSentence(stripHtml(i.summary)))}</div>
       </div>
       <div class="item-side">
         <span class="sev-pill sev-${i.severity}">${i.severity}</span>
         <div style="display:flex; gap:2px;">
           <button class="save-btn ${i.bookmarked ? 'saved' : ''}" data-action="bookmark" data-id="${i.id}" data-bookmarked="${i.bookmarked}" title="Save">${i.bookmarked ? '&#9733;' : '&#9734;'}</button>
-          <a class="save-btn" href="${i.link}" target="_blank" rel="noopener" title="Open original">&#8599;</a>
+          <a class="save-btn" href="${safeHref(i.link)}" target="_blank" rel="noopener" title="Open original">&#8599;</a>
         </div>
       </div>
     </div>

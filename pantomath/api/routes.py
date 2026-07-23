@@ -2,13 +2,19 @@ import asyncio
 import time
 import uuid
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
 from pantomath.alerts.webhook_keys import check_and_consume_attempt, hash_key, mask_url, new_salt
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
+from pantomath.database.restore import (
+    RestoreValidationError,
+    restore_database,
+    save_upload_to_temp,
+    validate_sqlite_backup,
+)
 from pantomath.database.sqlite import DB_PATH, get_db
 from pantomath.intelligence.enrichment import (
     derive_icon_url,
@@ -91,7 +97,17 @@ async def get_source_icon(source_id: str):
     if result is None:
         raise HTTPException(404, "icon not available")
     path, content_type = result
-    return FileResponse(path, media_type=content_type)
+    # These bytes are cached to disk and only change if the source's URL
+    # is edited (which calls invalidate_icon_cache server-side). The
+    # frontend re-requests this same URL on every feed re-render (30s
+    # poll, every WS new_items broadcast) — without any Cache-Control the
+    # browser sends a fresh conditional GET every time. 5 minutes cuts
+    # nearly all of that repetition within a session while still picking
+    # up an edited icon reasonably quickly — a full day (the more
+    # "obvious" cache duration) would mean the browser keeps showing a
+    # stale icon for up to 24h after an edit, since this URL never
+    # changes to bust it on its own.
+    return FileResponse(path, media_type=content_type, headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.get("/api/sources")
@@ -282,6 +298,14 @@ def _build_item_conditions(
             raise HTTPException(400, f"Unknown ioc_type '{ioc_type}'. Use one of: cve, ip, hash, email.")
         conditions.append(f"(',' || items.{ioc_column} || ',') LIKE ?")
         params.append(f"%,{ioc_value},%")
+    elif ioc_type:
+        # ioc_type given without a specific ioc_value: "has at least one IOC
+        # of this type" — powers the IOC calendar's day drilldown (all CVEs
+        # mentioned on a given day, not just occurrences of one specific CVE).
+        ioc_column = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}.get(ioc_type)
+        if not ioc_column:
+            raise HTTPException(400, f"Unknown ioc_type '{ioc_type}'. Use one of: cve, ip, hash, email.")
+        conditions.append(f"items.{ioc_column} != ''")
     if has_cve:
         conditions.append("items.cves != ''")
     if has_actor:
@@ -376,6 +400,24 @@ def _day_end_ts(date_str: str) -> float:
     return dt.timestamp()
 
 
+def _date_range_where(date_from: str | None, date_to: str | None) -> tuple[str, list]:
+    """
+    Builds a `fetched_at BETWEEN ...`-style WHERE fragment (empty string if
+    neither bound given) plus its params, for endpoints that scope a query
+    to a date range — shared by /api/iocs, /api/iocs/summary, and
+    /api/iocs/calendar so date handling can't drift out of sync between them.
+    """
+    clauses = []
+    params: list = []
+    if date_from:
+        clauses.append("fetched_at >= ?")
+        params.append(_day_start_ts(date_from))
+    if date_to:
+        clauses.append("fetched_at <= ?")
+        params.append(_day_end_ts(date_to))
+    return " AND ".join(clauses), params
+
+
 @router.get("/api/items/range")
 async def items_date_range():
     """Earliest/latest stored item timestamps — lets the UI bound a date picker to actual data."""
@@ -395,28 +437,55 @@ async def toggle_bookmark(item_id: str, bookmarked: bool):
     return {"ok": True}
 
 
+def _comma_column_counts_query(column: str, extra_where: str = "") -> str:
+    """
+    Builds a query that counts occurrences of each value in a comma-joined
+    TEXT column (e.g. items.vendors = "Microsoft,Cisco") without ever
+    pulling the raw column values into Python. A recursive CTE splits
+    each row's comma list inside SQLite itself; only the final
+    (value, count) pairs cross into the app.
+
+    Previously these endpoints did `SELECT {col} FROM items WHERE {col}
+    != ''`, loaded every matching row's full text into a Python list, and
+    split/counted it there — memory and CPU cost scaling with total
+    matching rows, on every request, on some of the most-hit endpoints
+    (Dashboard, IOCs page). This does the same job inside the SQL engine.
+    """
+    where = f"{column} != ''" + (f" AND {extra_where}" if extra_where else "")
+    return f"""
+        WITH RECURSIVE
+          base AS (SELECT {column} || ',' AS rest FROM items WHERE {where}),
+          split(tag, rest) AS (
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1) FROM base
+            UNION ALL
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
+            FROM split WHERE rest != ''
+          )
+        SELECT tag AS name, COUNT(*) AS count FROM split WHERE tag != ''
+        GROUP BY tag
+    """
+
+
 @router.get("/api/tags")
 async def list_tags(type: str = "vendor", limit: int = 20):
     """Distinct vendor/threat-actor tags with counts, for chip filters and the Vendors/Threat Actors pages."""
     col = "vendors" if type == "vendor" else "actors"
     db = await get_db()
-    cur = await db.execute(f"SELECT {col} FROM items WHERE {col} != ''")
-    rows = await cur.fetchall()
+    query = _comma_column_counts_query(col) + " ORDER BY count DESC, name ASC LIMIT ?"
+    cur = await db.execute(query, (limit,))
+    rows = [dict(r) for r in await cur.fetchall()]
     await db.close()
-    counts: dict[str, int] = {}
-    for row in rows:
-        for tag in row[0].split(","):
-            if tag:
-                counts[tag] = counts.get(tag, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    return [{"name": name, "count": count} for name, count in ranked]
+    return rows
 
 
 _IOC_COLUMNS = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}
 
 
 @router.get("/api/iocs")
-async def list_iocs(type: str = "cve", limit: int = 20, offset: int = 0):
+async def list_iocs(
+    type: str = "cve", limit: int = 20, offset: int = 0,
+    date_from: str | None = None, date_to: str | None = None,
+):
     """
     Distinct IOCs of one type with occurrence counts, paginated —
     powers the IOCs page's bar chart and chip list. `offset` lets the
@@ -428,38 +497,74 @@ async def list_iocs(type: str = "cve", limit: int = 20, offset: int = 0):
     — without a deterministic tiebreak, IOCs with equal counts could
     silently swap pages between requests (dict ordering isn't a
     stable ranking), which would be confusing while paginating.
+
+    date_from/date_to (both 'YYYY-MM-DD', inclusive) scope the count to
+    just that range — used when a day is selected on the IOCs page's
+    calendar, so "top CVEs" reflects that day instead of all-time.
     """
     col = _IOC_COLUMNS.get(type)
     if not col:
         raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
+    date_where, date_params = _date_range_where(date_from, date_to)
     db = await get_db()
-    cur = await db.execute(f"SELECT {col} FROM items WHERE {col} != ''")
-    rows = await cur.fetchall()
+    query = _comma_column_counts_query(col, extra_where=date_where) + " ORDER BY count DESC, name ASC LIMIT ? OFFSET ?"
+    cur = await db.execute(query, (*date_params, limit, offset))
+    rows = [dict(r) for r in await cur.fetchall()]
     await db.close()
-    counts: dict[str, int] = {}
-    for row in rows:
-        for value in row[0].split(","):
-            if value:
-                counts[value] = counts.get(value, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    page = ranked[offset:offset + limit]
-    return [{"name": name, "count": count} for name, count in page]
+    return rows
 
 
 @router.get("/api/iocs/summary")
-async def iocs_summary():
-    """Distinct-IOC-count per type, across all stored items — powers the IOC type distribution chart."""
+async def iocs_summary(date_from: str | None = None, date_to: str | None = None):
+    """
+    Distinct-IOC-count per type — powers the IOC type distribution chart.
+    date_from/date_to optionally scope it to a range, same as /api/iocs,
+    so the donut reflects a selected calendar day instead of all-time.
+    """
+    date_where, date_params = _date_range_where(date_from, date_to)
     db = await get_db()
     summary = {}
     for ioc_type, col in _IOC_COLUMNS.items():
-        cur = await db.execute(f"SELECT {col} FROM items WHERE {col} != ''")
-        rows = await cur.fetchall()
-        distinct = set()
-        for row in rows:
-            distinct.update(v for v in row[0].split(",") if v)
-        summary[ioc_type] = len(distinct)
+        query = f"SELECT COUNT(*) AS n FROM ({_comma_column_counts_query(col, extra_where=date_where)})"
+        cur = await db.execute(query, date_params)
+        row = await cur.fetchone()
+        summary[ioc_type] = row["n"]
     await db.close()
     return summary
+
+
+@router.get("/api/iocs/calendar")
+async def iocs_calendar(type: str = "cve", date_from: str | None = None, date_to: str | None = None):
+    """
+    Per-day counts of items containing at least one IOC of the given
+    type, for the IOCs page's calendar heatmap — 'how many articles with
+    a CVE landed on July 14th' rather than 'how many times was CVE-X
+    mentioned' (that's what /api/iocs already answers per-value).
+
+    date_from/date_to (both 'YYYY-MM-DD', inclusive) scope it to the
+    currently-displayed month rather than the item's entire history —
+    with a database running for a year+, an unbounded version of this
+    would return one row per day since install, most of them irrelevant
+    to whatever month the user is currently looking at.
+
+    Returns a plain list — [{"date": "2026-07-14", "count": 3}, ...] —
+    computed entirely in SQL (a single GROUP BY), not by loading rows
+    into Python and bucketing them there.
+    """
+    col = _IOC_COLUMNS.get(type)
+    if not col:
+        raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
+    date_where, date_params = _date_range_where(date_from, date_to)
+    where = f"{col} != ''" + (f" AND {date_where}" if date_where else "")
+    query = f"""
+        SELECT strftime('%Y-%m-%d', fetched_at, 'unixepoch', 'localtime') AS date, COUNT(*) AS count
+        FROM items WHERE {where} GROUP BY date ORDER BY date
+    """
+    db = await get_db()
+    cur = await db.execute(query, date_params)
+    rows = [dict(r) for r in await cur.fetchall()]
+    await db.close()
+    return rows
 
 
 # -------------------------------------------------------------------- stats
@@ -501,23 +606,20 @@ async def get_stats():
     top_sources = [{"name": r["name"], "count": r["c"]} for r in await cur.fetchall()]
 
     cur = await db.execute(
-        "SELECT vendors FROM items WHERE vendors != '' AND fetched_at > ?", (week_ago,)
+        _comma_column_counts_query("vendors", extra_where="fetched_at > ?") + " ORDER BY count DESC, name ASC LIMIT 5",
+        (week_ago,),
     )
-    vendor_counts: dict[str, int] = {}
-    for row in await cur.fetchall():
-        for v in row["vendors"].split(","):
-            if v:
-                vendor_counts[v] = vendor_counts.get(v, 0) + 1
-    top_vendors = sorted(vendor_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top_vendors = [(r["name"], r["count"]) for r in await cur.fetchall()]
 
-    # articles/day for the last 7 days
+    # articles/day for the last 7 days — bucketed in SQL rather than
+    # pulling every fetched_at timestamp into Python and grouping there.
+    # 'localtime' matches the previous behavior (time.localtime bucketing).
     cur = await db.execute(
-        "SELECT fetched_at FROM items WHERE fetched_at > ?", (week_ago,)
+        """SELECT strftime('%Y-%m-%d', fetched_at, 'unixepoch', 'localtime') AS day, COUNT(*) AS c
+           FROM items WHERE fetched_at > ? GROUP BY day""",
+        (week_ago,),
     )
-    day_buckets = {}
-    for row in await cur.fetchall():
-        day_key = time.strftime("%Y-%m-%d", time.localtime(row["fetched_at"]))
-        day_buckets[day_key] = day_buckets.get(day_key, 0) + 1
+    day_buckets = {r["day"]: r["c"] for r in await cur.fetchall()}
 
     await db.close()
     return {
@@ -537,6 +639,45 @@ async def get_stats():
 @router.get("/api/backup")
 async def backup_database():
     return FileResponse(DB_PATH, filename="pantomath-backup.db", media_type="application/octet-stream")
+
+
+@router.post("/api/restore")
+async def restore_database_endpoint(file: UploadFile = File(...)):
+    """
+    Restores the database from a previously-downloaded /api/backup file.
+    This REPLACES every item, source, setting, and webhook currently
+    stored — it is the one genuinely destructive endpoint in this app.
+
+    Safety sequence (see pantomath/database/restore.py for the full
+    reasoning): the upload is streamed to a temp file and fully
+    validated (SQLite header, integrity check, expected tables) before
+    the live database is touched at all; a bad or unrelated file never
+    gets this far. Only then is the live database checkpointed and
+    copied to a timestamped pantomath-pre-restore-*.db safety backup,
+    before the validated upload is atomically swapped into place.
+
+    Returns the safety-backup path so the caller always has a way back
+    if the restore turns out to be the wrong file.
+    """
+    tmp_path = None
+    try:
+        tmp_path = await save_upload_to_temp(file)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, validate_sqlite_backup, tmp_path)
+        # on success, restore_database consumes/moves tmp_path via os.replace
+        result = await loop.run_in_executor(None, restore_database, tmp_path)
+        return result
+    except RestoreValidationError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        # If we're still holding tmp_path here, either validation failed
+        # (raised before restore_database ran) or something else went
+        # wrong before the os.replace() — in both cases it was never
+        # moved, so clean it up. If restore_database() succeeded,
+        # tmp_path no longer exists (os.replace already consumed it) and
+        # this is a harmless no-op.
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 # ----------------------------------------------------------------- settings
@@ -579,6 +720,7 @@ class WebhookIn(BaseModel):
     source_id: str = ""
     min_severity: str = ""
     enabled: bool = True
+    allow_insecure_tls: bool = False  # skip TLS certificate verification (self-signed certs, internal CAs)
     key: str | None = None  # optional — if set, this webhook is protected from creation
 
 
@@ -616,10 +758,10 @@ async def add_webhook(webhook: WebhookIn):
         protected, key_salt, key_hash = 1, salt.hex(), hash_key(webhook.key, salt)
 
     await db.execute(
-        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash, allow_insecure_tls)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (wid, webhook.name, webhook.url, webhook.keyword, webhook.source_id,
-         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash),
+         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash, int(webhook.allow_insecure_tls)),
     )
     await db.commit()
     await db.close()
@@ -633,6 +775,7 @@ class WebhookEditIn(BaseModel):
     source_id: str | None = None
     min_severity: str | None = None
     enabled: bool | None = None
+    allow_insecure_tls: bool | None = None  # skip TLS certificate verification (self-signed certs, internal CAs)
     key: str | None = None            # current key — required to authorize any change to an already-protected webhook
     set_key: str | None = None        # sets a new key: adds protection if there wasn't any, or changes the existing one
     remove_protection: bool = False   # drops protection entirely (still requires the current `key`)
@@ -671,6 +814,8 @@ async def update_webhook(webhook_id: str, payload: WebhookEditIn):
             updates[field] = value
     if payload.enabled is not None:
         updates["enabled"] = int(payload.enabled)
+    if payload.allow_insecure_tls is not None:
+        updates["allow_insecure_tls"] = int(payload.allow_insecure_tls)
 
     if payload.set_key is not None:
         if not payload.set_key.strip():
@@ -745,7 +890,9 @@ async def test_webhook(webhook_id: str):
     }
     payload = build_payload(test_item, webhook)
     loop = asyncio.get_event_loop()
-    ok, status = await loop.run_in_executor(None, send_webhook_sync, webhook["url"], payload)
+    ok, status = await loop.run_in_executor(
+        None, send_webhook_sync, webhook["url"], payload, bool(webhook.get("allow_insecure_tls"))
+    )
 
     await db.execute(
         "UPDATE webhooks SET last_triggered = ?, last_status = ? WHERE id = ?",

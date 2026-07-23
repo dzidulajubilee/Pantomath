@@ -116,7 +116,32 @@ make package        # both .deb and .rpm
 ```
 
 Version comes from `pyproject.toml`'s `[project] version` — bump it there,
-nowhere else.
+nowhere else. `build.sh` (both `deb` and `rpm` targets) reads it
+automatically via `tomllib`, so nothing else needs updating by hand — no
+version string is hardcoded anywhere else in the project.
+
+### Versioning policy
+
+Semver (`MAJOR.MINOR.PATCH`), decided by the nature of the change being
+released, not by how much code churned:
+
+- **PATCH** (`0.0.x`) — bug fixes, performance/resource fixes, internal
+  refactors with no user-visible behavior change. Example: the SQL
+  aggregation rewrite and reprocessor batching from the resource-
+  utilization pass.
+- **MINOR** (`0.x.0`) — new, backward-compatible functionality. Example:
+  the IOCs page calendar (new endpoints, new UI, nothing existing changed
+  behavior).
+- **MAJOR** (`x.0.0`) — breaking changes: a removed/renamed API field or
+  endpoint, a schema change that isn't purely additive, a changed CLI/
+  config contract, anything that could break something depending on the
+  old behavior.
+
+As of this policy taking effect, versioning restarted at **0.0.1** as a
+clean baseline — prior version numbers (this project ran up to 1.13.0
+before) aren't part of this scheme and shouldn't be read as "10+ major
+releases in." Every change from 0.0.1 onward should bump according to the
+rules above rather than being assigned an arbitrary next number.
 
 ## Code style
 

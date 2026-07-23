@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS items (
 
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_items_source ON items(source_id);
+CREATE INDEX IF NOT EXISTS idx_items_severity ON items(severity);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -64,7 +65,8 @@ CREATE TABLE IF NOT EXISTS webhooks (
     key_salt TEXT,                   -- hex-encoded random salt, NULL unless protected
     key_hash TEXT,                   -- salted PBKDF2 hash of the key — the plaintext key is never stored
     key_fail_count INTEGER DEFAULT 0,
-    key_locked_until REAL DEFAULT 0  -- unix timestamp; failed-attempt lockout for the key, see pantomath/alerts/webhook_keys.py
+    key_locked_until REAL DEFAULT 0, -- unix timestamp; failed-attempt lockout for the key, see pantomath/alerts/webhook_keys.py
+    allow_insecure_tls INTEGER DEFAULT 0  -- opt-in per-webhook: 1 skips TLS certificate verification (self-signed certs, internal CAs)
 );
 """
 
@@ -91,4 +93,5 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("webhooks", "key_hash", "TEXT"),
     ("webhooks", "key_fail_count", "INTEGER DEFAULT 0"),
     ("webhooks", "key_locked_until", "REAL DEFAULT 0"),
+    ("webhooks", "allow_insecure_tls", "INTEGER DEFAULT 0"),
 ]

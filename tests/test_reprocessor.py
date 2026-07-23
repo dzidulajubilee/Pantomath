@@ -92,3 +92,35 @@ async def test_reprocess_empty_database_is_a_safe_noop():
     result = await reprocess_items(db, use_deep_extraction=False)
     await db.close()
     assert result == {"processed": 0, "sources": 0}
+
+
+async def test_reprocess_batches_correctly_across_a_batch_boundary():
+    """
+    reprocess_items now pages through items in fixed-size batches
+    (BATCH_SIZE) instead of loading the whole table at once. This proves
+    an item count that spans multiple batches still gets every row
+    processed exactly once — not skipped, not duplicated — by seeding
+    more rows than one batch holds and checking both the returned count
+    and that every single row actually got backfilled.
+    """
+    from pantomath.intelligence.reprocessor import BATCH_SIZE
+
+    db = await get_db()
+    await db.execute("INSERT INTO sources (id, name, url, category) VALUES ('src-legacy', 'Legacy Source', 'http://x.com/feed', 'news')")
+    n = BATCH_SIZE + 25  # deliberately spans two batches
+    for i in range(n):
+        await db.execute(
+            """INSERT INTO items (id, source_id, title, summary, guid, fetched_at, severity, vendors, actors, cves, ips, hashes, emails)
+               VALUES (?, 'src-legacy', ?, 'desc', ?, 1000, 'low', '', '', '', '', '', '')""",
+            (f"item-{i}", f"Cisco flaw CVE-2026-{10000+i}", f"item-{i}-guid"),
+        )
+    await db.commit()
+
+    result = await reprocess_items(db, use_deep_extraction=False)
+    assert result["processed"] == n
+    assert result["sources"] == 1
+
+    cur = await db.execute("SELECT COUNT(*) AS c FROM items WHERE cves = ''")
+    still_empty = (await cur.fetchone())["c"]
+    await db.close()
+    assert still_empty == 0, "every row across both batches should have been backfilled, none skipped"

@@ -60,6 +60,7 @@ body{
     radial-gradient(circle at 85% 100%, rgba(232,162,77,0.04), transparent 40%);
 }
 ::selection{background:var(--signal); color:#000;}
+:focus-visible{outline:1.5px solid var(--signal); outline-offset:2px; border-radius:4px;}
 ::-webkit-scrollbar{width:8px; height:8px;}
 ::-webkit-scrollbar-track{background:var(--bg);}
 ::-webkit-scrollbar-thumb{background:var(--line-bright); border-radius:4px;}
@@ -110,7 +111,7 @@ header{
 }
 .status-cluster{display:flex; align-items:center; gap:22px;}
 .status-item{display:flex; flex-direction:column; align-items:flex-end;}
-.status-item .val{font-family:var(--font-display); font-weight:600; font-size:17px; color:var(--heading); line-height:1.1;}
+.status-item .val{font-family:var(--font-display); font-weight:600; font-size:17px; color:var(--heading); line-height:1.1; font-variant-numeric:tabular-nums;}
 .status-item .lbl{font-size:9.5px; color:var(--text-dim); letter-spacing:0.12em; text-transform:uppercase; margin-top:2px;}
 .live-dot{width:7px;height:7px;border-radius:50%; background:var(--signal); box-shadow:0 0 6px var(--signal); display:inline-block; animation:pulse 1.6s ease-in-out infinite;}
 @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:0.35;}}
@@ -196,10 +197,17 @@ main{padding:22px 28px 60px;}
   background:var(--bg-panel); border:1px solid var(--line); border-left:3px solid var(--line-bright);
   border-radius:8px; padding:14px 16px; display:grid; grid-template-columns:1fr auto; gap:10px 16px;
   animation:slideIn .4s ease;
+  transition:border-color .15s ease, background .15s ease, transform .15s ease;
 }
+.item:hover{background:var(--bg-raised); border-color:var(--line-bright); transform:translateX(1px);}
 .item.sev-high{border-left-color:var(--red);}
 .item.sev-medium{border-left-color:var(--amber);}
 .item.sev-low{border-left-color:var(--line-bright);}
+/* A high-severity card should read as urgent at a glance down the whole
+   list, not just via its left rail — a very faint red wash does that
+   without competing with the neutral chrome around it. */
+.item.sev-high{background:linear-gradient(90deg, rgba(226,88,106,0.05), var(--bg-panel) 14%);}
+.item.sev-high:hover{background:linear-gradient(90deg, rgba(226,88,106,0.09), var(--bg-raised) 14%);}
 @keyframes slideIn{from{opacity:0; transform:translateY(-8px);} to{opacity:1; transform:translateY(0);}}
 .item-main{min-width:0;}
 .item-head{display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;}
@@ -257,12 +265,17 @@ main{padding:22px 28px 60px;}
   display:flex; flex-direction:column; gap:2px;
 }
 .nav-item{
-  display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:7px;
+  position:relative;
+  display:flex; align-items:center; gap:10px; padding:9px 10px 9px 13px; border-radius:7px;
   border:none; background:transparent; color:var(--text-dim); font-family:var(--font-mono);
   font-size:12.5px; text-align:left; cursor:pointer; width:100%; transition:background .12s, color .12s;
 }
 .nav-item:hover{background:var(--bg-raised); color:var(--text);}
 .nav-item.active{background:rgba(79,216,196,0.1); color:var(--signal); font-weight:600;}
+.nav-item.active::before{
+  content:''; position:absolute; left:0; top:20%; bottom:20%; width:2px;
+  background:var(--signal); border-radius:2px;
+}
 .nav-item .glyph{
   width:16px; height:16px; flex-shrink:0; display:inline-block;
   background-color:currentColor;
@@ -294,16 +307,38 @@ main{padding:22px 28px 60px;}
 
 /* STAT CARDS */
 .stat-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:20px;}
-.stat-card{background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px;}
+.stat-card{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px;
+  border-top:2px solid var(--line-bright);
+  transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.stat-card:hover{
+  transform:translateY(-2px);
+  box-shadow:0 8px 24px rgba(0,0,0,0.28);
+  border-color:var(--line-bright);
+}
 .stat-card .stat-label{font-size:11px; color:var(--text-dim); letter-spacing:0.04em; margin-bottom:8px;}
-.stat-card .stat-val{font-family:var(--font-display); font-size:26px; font-weight:600; color:var(--heading);}
+.stat-card .stat-val{
+  font-family:var(--font-display); font-size:28px; font-weight:600; color:var(--heading); line-height:1;
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+}
 .stat-card .stat-val.danger{color:var(--red);}
 .stat-card .stat-val.warn{color:var(--amber);}
 .stat-card .stat-val.ok{color:var(--signal);}
+/* Tint the whole card to match its number, not just the digits — makes
+   the critical-alerts card actually read as urgent at a glance instead
+   of blending into the row until you focus on it. */
+.stat-card:has(.stat-val.danger){border-top-color:var(--red); background:linear-gradient(180deg, rgba(226,88,106,0.06), var(--bg-panel) 60%);}
+.stat-card:has(.stat-val.ok){border-top-color:var(--signal);}
+.stat-card:has(.stat-val.warn){border-top-color:var(--amber);}
 
 .panel-grid{display:grid; grid-template-columns:1.3fr 1fr; gap:14px; margin-bottom:22px;}
 @media (max-width:980px){.panel-grid{grid-template-columns:1fr;}}
-.panel{background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px;}
+.panel{
+  background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px;
+  transition:box-shadow .15s ease;
+}
+.panel:hover{box-shadow:0 6px 20px rgba(0,0,0,0.22);}
 .panel h3{font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--text); margin-bottom:14px;}
 
 /* BAR CHARTS (lightweight, no chart library) */
@@ -311,10 +346,12 @@ main{padding:22px 28px 60px;}
 .bar-row .bar-label{width:110px; flex-shrink:0; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .bar-track{flex:1; height:8px; background:var(--bg-raised); border-radius:4px; overflow:hidden;}
 .bar-fill{height:100%; border-radius:4px; transition:width .4s ease;}
-.bar-row .bar-count{width:32px; text-align:right; color:var(--text-faint);}
+.bar-row .bar-count{width:32px; text-align:right; color:var(--text-faint); font-variant-numeric:tabular-nums;}
+.bar-fill{background-image:linear-gradient(90deg, rgba(255,255,255,0.06), transparent);}
 
 .sparkline-wrap{display:flex; align-items:flex-end; gap:4px; height:80px; padding-top:10px;}
-.spark-bar{flex:1; background:var(--signal); opacity:0.75; border-radius:3px 3px 0 0; min-height:2px;}
+.spark-bar{flex:1; background:var(--signal); opacity:0.75; border-radius:3px 3px 0 0; min-height:2px; transition:opacity .12s ease;}
+.spark-bar:hover{opacity:1;}
 .spark-labels{display:flex; gap:4px; margin-top:6px;}
 .spark-labels span{flex:1; text-align:center; font-size:9px; color:var(--text-faint);}
 
@@ -399,6 +436,62 @@ main{padding:22px 28px 60px;}
 }
 .ioc-type-btn:hover{border-color:var(--signal); color:var(--text);}
 .ioc-type-btn.active{background:var(--signal); border-color:var(--signal); color:#04120f; font-weight:600;}
+
+.ioc-calendar-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+.ioc-calendar-head h3{margin-bottom:0;}
+
+.cal-header{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; position:relative;}
+.cal-nav-group{display:flex; gap:4px;}
+.cal-month-label{
+  font-family:var(--font-display); font-size:13px; font-weight:600; color:var(--heading);
+  background:none; border:1px solid transparent; cursor:pointer; padding:3px 8px; border-radius:6px;
+  transition:border-color .12s, background .12s;
+}
+.cal-month-label:hover{border-color:var(--line-bright); background:var(--bg-raised);}
+.cal-nav-btn{
+  width:26px; height:26px; border-radius:6px; border:1px solid var(--line-bright); background:var(--bg-raised);
+  color:var(--text-dim); cursor:pointer; font-size:14px; line-height:1; display:flex; align-items:center; justify-content:center;
+  transition:background .12s, color .12s;
+}
+.cal-nav-btn:hover{background:var(--signal); color:#04120f; border-color:var(--signal);}
+.cal-nav-btn:disabled{opacity:0.35; cursor:not-allowed; background:var(--bg-raised); color:var(--text-faint); border-color:var(--line);}
+.cal-nav-btn:disabled:hover{background:var(--bg-raised); color:var(--text-faint); border-color:var(--line);}
+
+.cal-jump-popover{
+  position:absolute; top:32px; left:50%; transform:translateX(-50%); z-index:10;
+  background:var(--bg-panel); border:1px solid var(--line-bright); border-radius:8px; padding:10px;
+  flex-direction:column; gap:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); width:200px;
+}
+.cal-jump-year{
+  width:100%; padding:6px 8px; border-radius:6px; border:1px solid var(--line-bright); background:var(--bg-raised);
+  color:var(--heading); font-family:var(--font-mono); font-size:12px;
+}
+.cal-jump-months{display:grid; grid-template-columns:repeat(4, 1fr); gap:4px;}
+.cal-jump-month-btn{
+  padding:6px 0; border-radius:5px; border:1px solid var(--line); background:var(--bg-raised);
+  color:var(--text-dim); font-family:var(--font-mono); font-size:11px; cursor:pointer;
+  transition:background .12s, color .12s, border-color .12s;
+}
+.cal-jump-month-btn:hover{border-color:var(--signal); color:var(--text);}
+.cal-jump-month-btn.active{background:var(--signal); border-color:var(--signal); color:#04120f; font-weight:600;}
+
+.cal-weekdays{display:grid; grid-template-columns:repeat(7, 1fr); gap:4px; margin-bottom:4px;}
+.cal-weekdays span{text-align:center; font-size:10px; color:var(--text-faint); letter-spacing:0.06em;}
+
+.cal-grid{display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;}
+.cal-day{
+  aspect-ratio:1; border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  font-family:var(--font-mono); font-size:11px; color:var(--text-dim); border:1px solid transparent;
+  position:relative; transition:border-color .12s, transform .12s;
+}
+.cal-day-empty{visibility:hidden;}
+.cal-day.has-data{cursor:pointer; color:var(--heading); border-color:var(--line);}
+.cal-day.has-data:hover{border-color:var(--signal); transform:scale(1.06); z-index:1;}
+.cal-day.selected{border-color:var(--signal) !important; box-shadow:0 0 0 1.5px var(--signal);}
+.cal-day.today .cal-day-num{text-decoration:underline; text-underline-offset:2px;}
+.cal-day-num{font-size:10.5px; line-height:1.1;}
+.cal-day-count{font-size:8.5px; color:var(--text-faint); line-height:1;}
+.cal-day.has-data .cal-day-count{color:inherit; opacity:0.85;}
 
 .ioc-chip{
   display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11.5px;

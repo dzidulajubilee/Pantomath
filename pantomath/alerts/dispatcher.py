@@ -7,6 +7,7 @@ inherently low-frequency).
 """
 import asyncio
 import json
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +15,10 @@ import urllib.request
 from pantomath.alerts.matcher import matches_webhook
 
 TIMEOUT = 8  # seconds — don't let a slow/dead webhook endpoint stall polling
+
+# Reused across calls rather than rebuilt per-request — building an
+# unverified context is cheap, but there's no reason not to share it.
+_INSECURE_SSL_CONTEXT = ssl._create_unverified_context()
 
 
 def build_payload(item: dict, webhook: dict) -> dict:
@@ -49,15 +54,23 @@ def build_payload(item: dict, webhook: dict) -> dict:
     }
 
 
-def send_webhook_sync(url: str, payload: dict) -> tuple[bool, str]:
-    """Blocking. Call via loop.run_in_executor(). Returns (success, status_message)."""
+def send_webhook_sync(url: str, payload: dict, allow_insecure_tls: bool = False) -> tuple[bool, str]:
+    """Blocking. Call via loop.run_in_executor(). Returns (success, status_message).
+
+    allow_insecure_tls=True skips certificate verification for https:// URLs
+    (self-signed certs, internal CAs) — opt-in per webhook, since it's a
+    meaningful security tradeoff (no protection against MITM on that
+    connection) that the person should be choosing deliberately, not one
+    we default to.
+    """
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json", "User-Agent": "Pantomath/1.0"},
     )
+    context = _INSECURE_SSL_CONTEXT if allow_insecure_tls else None
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=context) as resp:
             return True, f"ok ({resp.status})"
     except urllib.error.HTTPError as e:
         return False, f"error: HTTP {e.code}"
@@ -88,7 +101,9 @@ async def dispatch_webhooks_for_items(db, items: list[dict]):
         last_status = "ok"
         for item in matched_items:
             payload = build_payload(item, webhook)
-            _ok, status = await loop.run_in_executor(None, send_webhook_sync, webhook["url"], payload)
+            _ok, status = await loop.run_in_executor(
+                None, send_webhook_sync, webhook["url"], payload, bool(webhook.get("allow_insecure_tls"))
+            )
             last_status = status
 
         await db.execute(

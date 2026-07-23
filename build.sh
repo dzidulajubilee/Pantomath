@@ -25,6 +25,9 @@ build_deb() {
     cp -r "$ROOT/config" "$pkgroot/opt/pantomath/"
     cp "$ROOT/pyproject.toml" "$pkgroot/opt/pantomath/"
     cp "$ROOT/README.md" "$pkgroot/opt/pantomath/"
+    if [ -d "$ROOT/installer/wheelhouse" ]; then
+        cp -r "$ROOT/installer/wheelhouse" "$pkgroot/opt/pantomath/wheelhouse"
+    fi
     cp "$ROOT/installer/deb/pantomath.service" "$pkgroot/etc/systemd/system/"
     cp "$ROOT/icons/pantomath.svg" "$pkgroot/usr/share/pixmaps/pantomath.svg"
     find "$pkgroot/opt/pantomath" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true

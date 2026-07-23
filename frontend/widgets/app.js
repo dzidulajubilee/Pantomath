@@ -5,6 +5,40 @@ function escapeHtml(str) {
   d.textContent = str || '';
   return d.innerHTML;
 }
+// escapeHtml (above) is safe for TEXT NODE content — e.g. ${escapeHtml(i.title)}
+// as an element's inner text — because textContent->innerHTML round-tripping
+// escapes &, <, > but deliberately leaves quote characters untouched (quotes
+// have no special meaning inside text content). That makes it UNSAFE on its
+// own for attribute-value contexts like href="${...}": a value containing a
+// literal " can close the attribute early and inject new ones, e.g.
+// `" onmouseover="alert(1)` becomes a live onmouseover handler on the tag.
+// escapeAttr additionally escapes quotes for exactly that context.
+function escapeAttr(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+// Every item.link in this app originates from external, only semi-trusted
+// content — RSS/Atom feed XML (a compromised or malicious source can put
+// anything in a <link> tag) or a restored database backup. Used directly as
+// an href, a javascript: or data: URL there would execute on click even with
+// perfect HTML-attribute escaping, since the injection isn't via HTML syntax
+// at all — it's via the URL scheme itself. Only http(s) links are ever
+// rendered as real hrefs; anything else (including a malformed/unparseable
+// URL) safely falls back to a dead '#' link instead of silently doing
+// nothing or, worse, executing.
+function safeHref(url) {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return escapeAttr(url);
+    }
+  } catch (e) { /* fall through */ }
+  return '#';
+}
 function stripHtml(html) {
   const d = document.createElement('div');
   d.innerHTML = html || '';
@@ -270,18 +304,30 @@ let iocMaxCount = 1;
 // so an auto-refresh of this view — a WebSocket new_items broadcast or the
 // 30s poll in init() — can restore it instead of always closing it.
 let iocDrilldown = null;
+// The calendar's currently displayed month, and the currently selected
+// day (if any, 'YYYY-MM-DD'). A selected day scopes the top chart, the
+// type-distribution donut, and the article list to just that date —
+// independent of iocDrilldown above, so clicking a specific IOC value
+// after selecting a day shows that value's occurrences on that day only.
+const _today = new Date();
+let iocCalYear = _today.getFullYear();
+let iocCalMonth = _today.getMonth() + 1;
+let iocSelectedDate = null;
 
 async function loadIOCsView(page = iocCurrentPage) {
   iocCurrentPage = page;
   document.querySelectorAll('.ioc-type-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.iocType === currentIocType);
   });
-  document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned`;
+  const dateSuffix = iocSelectedDate ? ` on ${new Date(iocSelectedDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}` : '';
+  document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned${dateSuffix}`;
+  document.getElementById('iocClearDateBtn').style.display = iocSelectedDate ? '' : 'none';
 
+  const dateParams = iocSelectedDate ? `&date_from=${iocSelectedDate}&date_to=${iocSelectedDate}` : '';
   const offset = (iocCurrentPage - 1) * IOC_PAGE_SIZE;
   const [top, summary] = await Promise.all([
-    fetch(`/api/iocs?type=${currentIocType}&limit=${IOC_PAGE_SIZE}&offset=${offset}`).then(r => r.json()),
-    fetch('/api/iocs/summary').then(r => r.json()),
+    fetch(`/api/iocs?type=${currentIocType}&limit=${IOC_PAGE_SIZE}&offset=${offset}${dateParams}`).then(r => r.json()),
+    fetch(`/api/iocs/summary?${iocSelectedDate ? `date_from=${iocSelectedDate}&date_to=${iocSelectedDate}` : ''}`).then(r => r.json()),
   ]);
 
   if (iocCurrentPage === 1) iocMaxCount = top.length ? top[0].count : 1;
@@ -297,30 +343,124 @@ async function loadIOCsView(page = iocCurrentPage) {
     Object.entries(IOC_TYPE_LABELS).map(([type, label]) => ({
       label, count: summary[type] || 0, color: IOC_TYPE_COLORS[type],
     })),
-    { centerLabel: 'distinct IOCs' });
+    { centerLabel: iocSelectedDate ? 'IOCs that day' : 'distinct IOCs' });
+
+  await loadIocCalendar();
 
   // Restore an open drilldown across auto-refreshes rather than always
   // closing it — but only for the IOC type currently being viewed; switching
   // type (below) is a genuine context change and should close it.
   if (iocDrilldown && iocDrilldown.type === currentIocType) {
     await showIocArticles(iocDrilldown.type, iocDrilldown.value, { scrollIntoView: false });
+  } else if (iocSelectedDate) {
+    await showIocDateArticles(iocSelectedDate, { scrollIntoView: false });
   } else {
     iocDrilldown = null;
     document.getElementById('iocArticlesPanel').style.display = 'none';
   }
 }
 
+// Guards loadIocCalendar against out-of-order responses: if navigation
+// fires two overlapping requests (e.g. someone double-clicks "next
+// month", or a slow network reorders responses), only the response that
+// matches the *current* token actually renders — an older, slower
+// response arriving after a newer one is simply discarded rather than
+// overwriting the screen with stale data.
+let _iocCalendarRequestToken = 0;
+
+async function loadIocCalendar() {
+  const myToken = ++_iocCalendarRequestToken;
+  const monthStr = String(iocCalMonth).padStart(2, '0');
+  const daysInMonth = new Date(iocCalYear, iocCalMonth, 0).getDate();
+  const from = `${iocCalYear}-${monthStr}-01`;
+  const to = `${iocCalYear}-${monthStr}-${String(daysInMonth).padStart(2, '0')}`;
+
+  const [rows, range] = await Promise.all([
+    fetch(`/api/iocs/calendar?type=${currentIocType}&date_from=${from}&date_to=${to}`).then(r => r.json()),
+    fetch('/api/items/range').then(r => r.json()),
+  ]);
+
+  if (myToken !== _iocCalendarRequestToken) return; // superseded by a newer request — discard
+
+  const counts = {};
+  rows.forEach(r => { counts[r.date] = r.count; });
+
+  // Bounds navigation to years the database could plausibly have data
+  // for, so "jump to year" can't wander off into meaningless empty years.
+  // Always includes the current year even if there's no data yet (a
+  // brand-new install with zero items shouldn't have a calendar that
+  // can't even reach today), and always includes the latest item's year
+  // even if that's in the future relative to "now" on this machine.
+  const nowYear = new Date().getFullYear();
+  const minYear = range.earliest ? Math.min(new Date(range.earliest * 1000).getFullYear(), nowYear) : nowYear;
+  const maxYear = range.latest ? Math.max(new Date(range.latest * 1000).getFullYear(), nowYear) : nowYear;
+
+  renderCalendarHeatmap(document.getElementById('iocCalendar'), {
+    year: iocCalYear, month: iocCalMonth, counts,
+    color: IOC_TYPE_COLORS[currentIocType],
+    selected: iocSelectedDate,
+    itemLabel: IOC_TYPE_LABELS[currentIocType].toLowerCase(),
+    minYear, maxYear,
+    onSelectDay: (dateStr) => {
+      // Clicking the already-selected day again clears the filter, same
+      // toggle pattern as re-clicking an active filter chip elsewhere in
+      // the app.
+      iocSelectedDate = iocSelectedDate === dateStr ? null : dateStr;
+      iocDrilldown = null;
+      iocCurrentPage = 1;
+      loadIOCsView();
+    },
+    onNavigate: (year, month) => {
+      // Re-validated here too, not just trusted from the widget — this
+      // function is the actual boundary that builds an API query string
+      // from year/month, so it's the one place that must never accept a
+      // bad value regardless of what UI layer called it.
+      year = parseInt(year, 10);
+      month = parseInt(month, 10);
+      if (!Number.isInteger(year) || !Number.isInteger(month)) return;
+      iocCalYear = Math.min(maxYear, Math.max(minYear, year));
+      iocCalMonth = Math.min(12, Math.max(1, month));
+      loadIocCalendar();
+    },
+  });
+}
+
 document.querySelectorAll('.ioc-type-btn').forEach(btn => {
-  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; iocCurrentPage = 1; loadIOCsView(); };
+  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; iocSelectedDate = null; iocCurrentPage = 1; loadIOCsView(); };
 });
+
+document.getElementById('iocClearDateBtn').onclick = () => {
+  iocSelectedDate = null;
+  iocDrilldown = null;
+  iocCurrentPage = 1;
+  loadIOCsView();
+};
 
 async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
   iocDrilldown = { type: iocType, value };
-  const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50 });
+  const dateFilter = iocSelectedDate ? { date_from: iocSelectedDate, date_to: iocSelectedDate } : {};
+  const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50, ...dateFilter });
+  const dateSuffix = iocSelectedDate ? ` on ${iocSelectedDate}` : '';
+  renderIocArticles(
+    `Articles containing ${IOC_TYPE_LABELS[iocType].replace(/s$/, '')}: ${value}${dateSuffix} (${items.length} occurrence${items.length === 1 ? '' : 's'})`,
+    items, scrollIntoView,
+  );
+}
+
+async function showIocDateArticles(dateStr, { scrollIntoView = true } = {}) {
+  iocDrilldown = null;
+  const items = await fetchItems({ ioc_type: currentIocType, date_from: dateStr, date_to: dateStr, limit: 100 });
+  const label = new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+  renderIocArticles(
+    `Articles with ${IOC_TYPE_LABELS[currentIocType]} on ${label} (${items.length})`,
+    items, scrollIntoView,
+  );
+}
+
+function renderIocArticles(title, items, scrollIntoView) {
   const panel = document.getElementById('iocArticlesPanel');
   const tbody = document.getElementById('iocArticlesBody');
-  document.getElementById('iocArticlesTitle').textContent =
-    `Articles containing ${IOC_TYPE_LABELS[iocType].replace(/s$/, '')}: ${value} (${items.length} occurrence${items.length === 1 ? '' : 's'})`;
+  document.getElementById('iocArticlesTitle').textContent = title;
 
   tbody.innerHTML = items.length === 0
     ? `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:24px;">No articles found.</td></tr>`
@@ -329,7 +469,7 @@ async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
           <td><span class="src-tag" style="background:${i.source_color}22; color:${i.source_color}">${escapeHtml(i.source_name)}</span></td>
           <td>${escapeHtml(i.title)}</td>
           <td style="color:var(--text-faint); white-space:nowrap;">${new Date(i.fetched_at * 1000).toLocaleString()}</td>
-          <td style="text-align:right;"><a class="icon-btn" href="${i.link}" target="_blank" rel="noopener" title="Open original">&#8599;</a></td>
+          <td style="text-align:right;"><a class="icon-btn" href="${safeHref(i.link)}" target="_blank" rel="noopener" title="Open original">&#8599;</a></td>
         </tr>
       `).join('');
 
@@ -391,7 +531,7 @@ async function loadWebhooksTable() {
     const statusOk = w.last_status && w.last_status.startsWith('ok');
     return `
       <tr>
-        <td>${w.protected ? '🔒 ' : ''}${escapeHtml(w.name)}</td>
+        <td>${w.protected ? '🔒 ' : ''}${escapeHtml(w.name)}${w.allow_insecure_tls ? ' <span title="TLS certificate verification disabled for this webhook" style="color:var(--text-faint); font-size:10.5px;">(insecure TLS)</span>' : ''}</td>
         <td style="color:var(--text-dim); font-size:11.5px;">${escapeHtml(trigger)}</td>
         <td>
           <span class="status-badge status-${w.last_status === 'pending' ? 'pending' : (statusOk ? 'ok' : 'error')}"></span>
@@ -604,6 +744,47 @@ document.getElementById('refreshAllBtn').onclick = async () => {
 
 document.getElementById('backupBtn').onclick = () => { window.location.href = '/api/backup'; };
 
+document.getElementById('restoreBtn').onclick = () => { document.getElementById('restoreFileInput').click(); };
+
+document.getElementById('restoreFileInput').onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // reset so picking the exact same file again still fires 'change'
+  if (!file) return;
+
+  const resultEl = document.getElementById('restoreResult');
+  // This is one of the few genuinely destructive actions in the app —
+  // the confirmation names the actual file so a misclick on the wrong
+  // backup is caught before anything happens, not after.
+  if (!confirm(
+    `Restore the database from "${file.name}"?\n\nThis REPLACES all current items, sources, settings, and webhooks. ` +
+    `A safety copy of what's currently live will be made automatically first, but this still isn't reversible from ` +
+    `inside the app — you'd need that safety-backup file to undo it.`
+  )) {
+    return;
+  }
+
+  resultEl.textContent = 'Uploading and validating…';
+  resultEl.style.color = 'var(--text-faint)';
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/restore', { method: 'POST', body: formData });
+    const body = await res.json();
+    if (!res.ok) {
+      resultEl.textContent = `Restore failed: ${body.detail || 'unknown error'}`;
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    resultEl.textContent = `Restored successfully. Previous data was saved to: ${body.safety_backup || '(no prior database existed)'}. Reloading…`;
+    resultEl.style.color = 'var(--signal)';
+    setTimeout(() => window.location.reload(), 2500);
+  } catch (err) {
+    resultEl.textContent = `Restore failed: ${err.message}`;
+    resultEl.style.color = 'var(--red)';
+  }
+};
+
 document.getElementById('reprocessBtn').onclick = async () => {
   const btn = document.getElementById('reprocessBtn');
   const resultEl = document.getElementById('reprocessResult');
@@ -713,6 +894,7 @@ function openWebhookModal(webhook, verifiedKey = null) {
   document.getElementById('whKeyword').value = webhook ? webhook.keyword : '';
   document.getElementById('whSource').value = webhook ? webhook.source_id : '';
   document.getElementById('whMinSeverity').value = webhook ? webhook.min_severity : '';
+  document.getElementById('whInsecureTls').checked = webhook ? !!webhook.allow_insecure_tls : false;
   whProtectCheckbox.checked = webhook ? !!webhook.protected : false;
   whKeyInput.value = '';
   whKeyInput.placeholder = (webhook && webhook.protected) ? 'Leave blank to keep the current key' : 'Enter a key';
@@ -734,12 +916,13 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
   const keyword = document.getElementById('whKeyword').value.trim();
   const source_id = document.getElementById('whSource').value;
   const min_severity = document.getElementById('whMinSeverity').value;
+  const allow_insecure_tls = document.getElementById('whInsecureTls').checked;
   const wantsProtection = whProtectCheckbox.checked;
   const keyInput = whKeyInput.value;
   if (!name || !url) { alert('Name and webhook URL are required'); return; }
 
   const isEditing = !!editingWebhookId;
-  const body = { name, url, keyword, source_id, min_severity };
+  const body = { name, url, keyword, source_id, min_severity, allow_insecure_tls };
   if (!isEditing) body.enabled = true;
 
   if (wantsProtection) {
@@ -765,6 +948,7 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
     document.getElementById('whKeyword').value = '';
     document.getElementById('whSource').value = '';
     document.getElementById('whMinSeverity').value = '';
+    document.getElementById('whInsecureTls').checked = false;
     whProtectCheckbox.checked = false;
     whKeyInput.value = '';
     whKeyField.style.display = 'none';

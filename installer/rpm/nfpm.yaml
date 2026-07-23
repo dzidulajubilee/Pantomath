@@ -35,6 +35,8 @@ contents:
     dst: /opt/pantomath/pyproject.toml
   - src: ../../README.md
     dst: /opt/pantomath/README.md
+  - src: ../wheelhouse
+    dst: /opt/pantomath/wheelhouse
   - src: ./pantomath.service
     dst: /etc/systemd/system/pantomath.service
   - src: ../../icons/pantomath.svg

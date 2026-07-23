@@ -22,6 +22,16 @@ async def get_db():
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA foreign_keys = ON")
+    # WAL lets readers (API requests) proceed while the scheduler's
+    # background poll is mid-write, instead of blocking behind SQLite's
+    # default rollback-journal exclusive lock — this app has exactly that
+    # pattern (one continuous background writer + many concurrent API
+    # reads) so it matters here, not just as a generic best practice.
+    # busy_timeout is the backstop for the remaining moments two writers
+    # do overlap (e.g. "poll all now" plus the scheduler tick): retry
+    # for up to 5s instead of immediately raising "database is locked".
+    await db.execute("PRAGMA journal_mode = WAL")
+    await db.execute("PRAGMA busy_timeout = 5000")
     return db
 
 

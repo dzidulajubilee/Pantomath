@@ -14,8 +14,15 @@ chown -R pantomath:pantomath /var/lib/pantomath
 if [ ! -d /opt/pantomath/venv ]; then
     python3 -m venv /opt/pantomath/venv
 fi
-/opt/pantomath/venv/bin/pip install --quiet --upgrade pip
-/opt/pantomath/venv/bin/pip install --quiet /opt/pantomath
+
+# Prefer the wheelhouse bundled in the package — see installer/deb/postinstall.sh
+# for why this matters (air-gapped / restricted-egress hosts).
+if [ -d /opt/pantomath/wheelhouse ] && [ -n "$(ls -A /opt/pantomath/wheelhouse 2>/dev/null)" ]; then
+    /opt/pantomath/venv/bin/pip install --quiet --no-index --find-links=/opt/pantomath/wheelhouse /opt/pantomath
+else
+    /opt/pantomath/venv/bin/pip install --quiet --upgrade pip
+    /opt/pantomath/venv/bin/pip install --quiet /opt/pantomath
+fi
 
 chown -R pantomath:pantomath /opt/pantomath
 

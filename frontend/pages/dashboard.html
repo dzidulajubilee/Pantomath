@@ -206,6 +206,7 @@
           <button class="btn" id="importSourcesBtn">Import</button>
           <input type="file" id="importSourcesFile" accept="application/json" style="display:none;">
           <button class="btn btn-primary" id="addSourceBtnSources">+ Add Source</button>
+          <button class="btn" id="lockSourcesBtn" title="Re-lock Settings &amp; Sources">&#128274; Lock</button>
         </div>
       </div>
       <table class="sources-table">
@@ -230,7 +231,7 @@
 
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
-      <div class="view-head"><div><h2>Settings</h2><div class="desc">Configuration &amp; data management</div></div></div>
+      <div class="view-head"><div><h2>Settings</h2><div class="desc">Configuration &amp; data management</div></div><button class="btn" id="lockSettingsBtn" title="Re-lock Settings &amp; Sources">&#128274; Lock</button></div>
 
       <div class="settings-section">
         <h4>Feeds</h4>
@@ -369,6 +370,44 @@
     <div class="modal-actions">
       <button class="btn" id="cancelAdd">Cancel</button>
       <button class="btn btn-primary" id="confirmAdd">Add source</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settingsAuthOverlay">
+  <div class="modal" style="width:380px;">
+    <div id="authStateSetup">
+      <h3>Set up a Settings password</h3>
+      <div class="settings-hint" style="margin-bottom:16px;">This protects Settings and Sources only — the rest of the dashboard stays open.</div>
+      <div class="field"><label>Password</label><input type="password" id="authSetupPassword" placeholder="At least 8 characters"></div>
+      <div class="field"><label>Confirm password</label><input type="password" id="authSetupPasswordConfirm"></div>
+      <div class="settings-hint" id="authSetupError" style="color:var(--red); min-height:16px;"></div>
+      <div class="modal-actions"><button class="btn btn-primary" id="authSetupSubmit">Set password</button></div>
+    </div>
+    <div id="authStateLogin" style="display:none;">
+      <h3>&#128274; Settings locked</h3>
+      <div class="field"><label>Password</label><input type="password" id="authLoginPassword"></div>
+      <div class="settings-hint" id="authLoginError" style="color:var(--red); min-height:16px;"></div>
+      <div class="modal-actions">
+        <button class="btn" id="authForgotLink" style="margin-right:auto;">Forgot password?</button>
+        <button class="btn btn-primary" id="authLoginSubmit">Unlock</button>
+      </div>
+    </div>
+    <div id="authStateRecovery" style="display:none;">
+      <h3>Reset with recovery code</h3>
+      <div class="field"><label>Recovery code</label><input type="text" id="authRecoveryCode" placeholder="XXXX-XXXX-XXXX" style="font-family:var(--font-mono); text-transform:uppercase;"></div>
+      <div class="field"><label>New password</label><input type="password" id="authRecoveryNewPassword" placeholder="At least 8 characters"></div>
+      <div class="settings-hint" id="authRecoveryError" style="color:var(--red); min-height:16px;"></div>
+      <div class="modal-actions">
+        <button class="btn" id="authRecoveryBack" style="margin-right:auto;">Back</button>
+        <button class="btn btn-primary" id="authRecoverySubmit">Reset password</button>
+      </div>
+    </div>
+    <div id="authStateShowRecovery" style="display:none;">
+      <h3>Save your recovery code</h3>
+      <div class="settings-hint" style="margin-bottom:12px;">This is the <strong>only</strong> time this code is shown. If the password is ever forgotten, this is the only way back in.</div>
+      <div id="authRecoveryCodeDisplay" style="font-family:var(--font-mono); font-size:19px; text-align:center; padding:16px; background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:8px; letter-spacing:1.5px; margin-bottom:16px;"></div>
+      <div class="modal-actions"><button class="btn btn-primary" id="authRecoveryCodeContinue" style="width:100%;">I've saved it — continue</button></div>
     </div>
   </div>
 </div>

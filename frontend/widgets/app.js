@@ -1,5 +1,173 @@
 // ---------------------------------------------------------------- helpers
 
+// ---------------------------------------------------------------- helpers
+
+// ------------------------------------------------------- settings auth
+
+// Only Settings and Sources are password-gated (server-side, via
+// pantomath/api/routes.py's protected_router) — the rest of the app
+// (Dashboard, Live Feed, IOCs, etc.) is intentionally left open, since
+// this is designed as an always-visible SOC/NOC display. See
+// pantomath/auth/settings_auth.py for the full reasoning.
+let settingsToken = sessionStorage.getItem('pantomath_settings_token') || null;
+let _authUnlockedCallback = null;
+
+function setSettingsToken(token) {
+  settingsToken = token;
+  if (token) sessionStorage.setItem('pantomath_settings_token', token);
+  else sessionStorage.removeItem('pantomath_settings_token');
+}
+
+// Every fetch() call in the app is routed through this wrapper (it
+// replaces the global function once, here, rather than editing each of
+// the dozens of individual call sites across the app — safer, since a
+// hand-edited call site is easy to miss and this project has already
+// hit that exact mistake once, with the href-escaping fix). The header
+// is harmless on unprotected routes — nothing there reads it — so
+// sending it unconditionally is simpler and safer than trying to
+// enumerate which URLs need it.
+(function installSettingsAuthFetchWrapper() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function (url, opts = {}) {
+    if (settingsToken) {
+      opts = { ...opts, headers: { ...(opts.headers || {}), 'X-Settings-Token': settingsToken } };
+    }
+    return nativeFetch(url, opts);
+  };
+})();
+
+function _resetAuthGateForm() {
+  ['authSetupPassword', 'authSetupPasswordConfirm', 'authLoginPassword', 'authRecoveryCode', 'authRecoveryNewPassword'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  ['authSetupError', 'authLoginError', 'authRecoveryError'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '';
+  });
+}
+
+// Shows the lock modal. `mode` is 'setup' (no password configured yet)
+// or 'login' (returning visit). `onUnlocked` is called once
+// authentication actually succeeds — the caller's view loader passes
+// itself in, so e.g. loadSettingsView() re-runs automatically right
+// after a successful login instead of the operator having to navigate
+// away and back.
+function showAuthGate(mode, onUnlocked) {
+  _authUnlockedCallback = onUnlocked;
+  _resetAuthGateForm();
+  document.getElementById('authStateSetup').style.display = mode === 'setup' ? '' : 'none';
+  document.getElementById('authStateLogin').style.display = mode === 'login' ? '' : 'none';
+  document.getElementById('authStateRecovery').style.display = 'none';
+  document.getElementById('authStateShowRecovery').style.display = 'none';
+  document.getElementById('settingsAuthOverlay').classList.add('open');
+}
+
+function hideAuthGate() {
+  document.getElementById('settingsAuthOverlay').classList.remove('open');
+}
+
+function showRecoveryCodeScreen(code) {
+  ['authStateSetup', 'authStateLogin', 'authStateRecovery'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  document.getElementById('authStateShowRecovery').style.display = '';
+  document.getElementById('authRecoveryCodeDisplay').textContent = code;
+  document.getElementById('settingsAuthOverlay').classList.add('open');
+}
+
+// Called at the top of loadSettingsView()/loadSourcesView(). Returns
+// true if already unlocked (a stale/expired token is still handled —
+// each loader checks the status of its own first protected fetch and
+// falls back to showAuthGate('login', ...) if it comes back 401,
+// exactly like an expired session should). Returns false if it just
+// rendered the lock screen, in which case the caller should stop
+// without trying to load real content yet.
+async function ensureSettingsUnlocked(onUnlocked) {
+  if (settingsToken) return true;
+  if (document.getElementById('settingsAuthOverlay').classList.contains('open')) {
+    // Already showing the lock screen — possibly mid-recovery-flow, or
+    // the user is actively typing a password. A redundant/overlapping
+    // call here (e.g. two loadSettingsView() calls in flight at once,
+    // or the 30s periodic refresh firing while still locked) must not
+    // reset the visible state back to the login screen and blow away
+    // whatever progress the user has made. Still worth updating which
+    // callback fires on eventual success, in case they navigated to a
+    // different gated page while locked.
+    _authUnlockedCallback = onUnlocked;
+    return false;
+  }
+  const status = await (await fetch('/api/settings/auth/status')).json();
+  showAuthGate(status.configured ? 'login' : 'setup', onUnlocked);
+  return false;
+}
+
+document.getElementById('authSetupSubmit').onclick = async () => {
+  const pw = document.getElementById('authSetupPassword').value;
+  const pw2 = document.getElementById('authSetupPasswordConfirm').value;
+  const errEl = document.getElementById('authSetupError');
+  if (pw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  if (pw !== pw2) { errEl.textContent = 'Passwords do not match.'; return; }
+  const res = await fetch('/api/settings/auth/setup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Setup failed.'; return; }
+  setSettingsToken(body.token);
+  showRecoveryCodeScreen(body.recovery_code);
+};
+
+document.getElementById('authLoginSubmit').onclick = async () => {
+  const pw = document.getElementById('authLoginPassword').value;
+  const errEl = document.getElementById('authLoginError');
+  const res = await fetch('/api/settings/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Login failed.'; return; }
+  setSettingsToken(body.token);
+  hideAuthGate();
+  _authUnlockedCallback?.();
+};
+document.getElementById('authLoginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('authLoginSubmit').click(); });
+
+document.getElementById('authForgotLink').onclick = () => {
+  document.getElementById('authStateLogin').style.display = 'none';
+  document.getElementById('authStateRecovery').style.display = '';
+};
+document.getElementById('authRecoveryBack').onclick = () => {
+  document.getElementById('authStateRecovery').style.display = 'none';
+  document.getElementById('authStateLogin').style.display = '';
+};
+
+document.getElementById('authRecoverySubmit').onclick = async () => {
+  const code = document.getElementById('authRecoveryCode').value;
+  const newPw = document.getElementById('authRecoveryNewPassword').value;
+  const errEl = document.getElementById('authRecoveryError');
+  if (newPw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  const res = await fetch('/api/settings/auth/recover', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recovery_code: code, new_password: newPw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Recovery failed.'; return; }
+  setSettingsToken(body.token);
+  showRecoveryCodeScreen(body.recovery_code);
+};
+
+document.getElementById('authRecoveryCodeContinue').onclick = () => {
+  hideAuthGate();
+  _authUnlockedCallback?.();
+};
+
+async function lockSettings() {
+  await fetch('/api/settings/auth/logout', { method: 'POST' });
+  setSettingsToken(null);
+  if (currentView() === 'settings' || currentView() === 'sources') {
+    VIEW_LOADERS[currentView()]();
+  }
+}
+document.getElementById('lockSettingsBtn').onclick = lockSettings;
+document.getElementById('lockSourcesBtn').onclick = lockSettings;
+
 function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str || '';
@@ -495,7 +663,11 @@ async function loadAnalytics() {
 // -------------------------------------------------------------- settings
 
 async function loadSettingsView() {
-  const settings = await (await fetch('/api/settings')).json();
+  if (!(await ensureSettingsUnlocked(loadSettingsView))) return;
+
+  const settingsRes = await fetch('/api/settings');
+  if (settingsRes.status === 401) { setSettingsToken(null); showAuthGate('login', loadSettingsView); return; }
+  const settings = await settingsRes.json();
   document.getElementById('retentionSelect').value = String(settings.retention_days);
   document.getElementById('deepExtractionToggle').classList.toggle('on', settings.deep_extraction);
 
@@ -513,7 +685,18 @@ async function loadSettingsView() {
 }
 
 async function loadWebhooksTable() {
-  const webhooks = await (await fetch('/api/webhooks')).json();
+  const res = await fetch('/api/webhooks');
+  if (res.status === 401) {
+    // Session expired while already on the Settings page (e.g. the
+    // 1-hour session ran out, or another tab logged out). Falling back
+    // to the lock screen here — rather than leaving the page half-
+    // rendered with a broken webhooks section — matches how
+    // loadSettingsView() itself already handles this for /api/settings.
+    setSettingsToken(null);
+    showAuthGate('login', loadSettingsView);
+    return;
+  }
+  const webhooks = await res.json();
   const tbody = document.getElementById('webhooksTableBody');
   if (webhooks.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:20px;">No webhooks configured.</td></tr>`;
@@ -621,31 +804,59 @@ async function unlockProtectedWebhook(webhook) {
 }
 
 document.getElementById('retentionSelect').addEventListener('change', async (e) => {
-  await fetch('/api/settings', {
+  const res = await fetch('/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ retention_days: e.target.value }),
   });
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', loadSettingsView); }
 });
 
 document.getElementById('deepExtractionToggle').onclick = async function () {
   const enabling = !this.classList.contains('on');
   this.classList.toggle('on', enabling);
-  await fetch('/api/settings', {
+  const res = await fetch('/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ deep_extraction: enabling ? '1' : '0' }),
   });
+  if (res.status === 401) {
+    this.classList.toggle('on', !enabling); // revert the optimistic UI change — it didn't actually save
+    setSettingsToken(null);
+    showAuthGate('login', loadSettingsView);
+  }
 };
 
 // -------------------------------------------------------------- sources view
 
 async function loadSources() {
   const res = await fetch('/api/sources');
+  if (!res.ok) {
+    // Expected whenever Settings/Sources is locked (including on every
+    // fresh page load before authenticating) — must not throw here.
+    // sources must stay a real array, since other code throughout the
+    // app calls .filter()/.find() on it; leaving it as a parsed error
+    // object ({detail: "..."}) would crash the FIRST such call, and
+    // this function runs unconditionally during boot (see init()),
+    // before the WebSocket connects — an uncaught exception here was
+    // silently killing the rest of the boot sequence, including
+    // connectWs(), which is why notifications appeared broken (they
+    // fire from the WS message handler, which never got reached).
+    sources = [];
+    const statEl = document.getElementById('statSources');
+    if (statEl) statEl.textContent = '—';
+    return;
+  }
   sources = await res.json();
   document.getElementById('statSources').textContent = sources.filter(s => s.enabled).length;
 }
 
 async function loadSourcesView() {
-  await loadSources();
+  if (!(await ensureSettingsUnlocked(loadSourcesView))) return;
+
+  const sourcesRes = await fetch('/api/sources');
+  if (sourcesRes.status === 401) { setSettingsToken(null); showAuthGate('login', loadSourcesView); return; }
+  sources = await sourcesRes.json();
+  document.getElementById('statSources').textContent = sources.filter(s => s.enabled).length;
+
   const tbody = document.getElementById('sourcesTableBody');
   if (sources.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-faint); padding:30px;">No sources yet. Click <b>+ Add Source</b> to get started.</td></tr>`;
@@ -695,7 +906,9 @@ async function loadSourcesView() {
 document.getElementById('exportSourcesBtn').onclick = downloadSourcesExport;
 document.getElementById('settingsExportBtn').onclick = downloadSourcesExport;
 async function downloadSourcesExport() {
-  const data = await (await fetch('/api/sources/export')).json();
+  const res = await fetch('/api/sources/export');
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', () => {}); return; }
+  const data = await res.json();
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -994,7 +1207,7 @@ function connectWs() {
 (async function init() {
   initThemeControls();
   await initNotificationControls();
-  await loadSources();
+  try { await loadSources(); } catch (e) { console.warn('loadSources() failed during boot — continuing anyway:', e); }
   const initial = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard';
   navigateTo(initial);
   connectWs();

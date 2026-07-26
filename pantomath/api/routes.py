@@ -2,12 +2,13 @@ import asyncio
 import time
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
 from pantomath.alerts.webhook_keys import check_and_consume_attempt, hash_key, mask_url, new_salt
+from pantomath.auth import settings_auth
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
 from pantomath.database.restore import (
     RestoreValidationError,
@@ -24,6 +25,101 @@ from pantomath.intelligence.enrichment import (
 from pantomath.intelligence.reprocessor import reprocess_items
 
 router = APIRouter()
+
+
+async def require_settings_auth(x_settings_token: str | None = Header(None)):
+    """
+    Dependency applied to every route under the Settings and Sources
+    surfaces (see `protected_router` below) — never to anything else.
+    The rest of the app (Dashboard, Live Feed, IOCs, etc.) is designed to
+    be an always-open SOC/NOC display; only configuration actions are
+    gated. Enforced here, server-side, rather than only hidden in the
+    frontend — a UI-only lock would do nothing against someone calling
+    these endpoints directly.
+    """
+    if not settings_auth.validate_session(x_settings_token):
+        raise HTTPException(401, "Settings session expired or invalid — please log in again.")
+
+
+# Every route on this router requires a valid settings-auth session.
+# Kept as a *second* router (rather than adding a dependency to each of
+# the ~17 individual route functions) so the gate is enforced by
+# construction — a new route added here is automatically protected
+# without anyone needing to remember to add the dependency by hand.
+protected_router = APIRouter(dependencies=[Depends(require_settings_auth)])
+
+
+class SettingsPasswordSetup(BaseModel):
+    password: str
+
+
+class SettingsPasswordLogin(BaseModel):
+    password: str
+
+
+class SettingsRecoveryReset(BaseModel):
+    recovery_code: str
+    new_password: str
+
+
+@router.get("/api/settings/auth/status")
+async def settings_auth_status():
+    """Whether a Settings/Sources password has been configured yet — the frontend uses this to decide setup-form vs login-form."""
+    db = await get_db()
+    configured = await settings_auth.is_password_configured(db)
+    await db.close()
+    return {"configured": configured}
+
+
+@router.post("/api/settings/auth/setup")
+async def settings_auth_setup(body: SettingsPasswordSetup):
+    """
+    First-time setup only. Returns the one-time recovery code — the
+    frontend must display this prominently and make clear it will never
+    be shown again, since only its hash is stored.
+    """
+    db = await get_db()
+    if await settings_auth.is_password_configured(db):
+        await db.close()
+        raise HTTPException(409, "A password is already configured for Settings/Sources.")
+    try:
+        recovery_code = await settings_auth.setup_password(db, body.password)
+    except ValueError as e:
+        await db.close()
+        raise HTTPException(400, str(e))
+    await db.close()
+    return {"token": settings_auth.create_session(), "recovery_code": recovery_code}
+
+
+@router.post("/api/settings/auth/login")
+async def settings_auth_login(body: SettingsPasswordLogin):
+    db = await get_db()
+    ok, err = await settings_auth.verify_password(db, body.password)
+    await db.close()
+    if not ok:
+        raise HTTPException(401, err)
+    return {"token": settings_auth.create_session()}
+
+
+@router.post("/api/settings/auth/recover")
+async def settings_auth_recover(body: SettingsRecoveryReset):
+    """
+    The recovery-code path: proves identity via the one-time code shown
+    at setup instead of the password, then immediately sets a new
+    password AND issues a new recovery code (the old code is single-use).
+    """
+    db = await get_db()
+    ok, err, new_recovery = await settings_auth.reset_via_recovery_code(db, body.recovery_code, body.new_password)
+    await db.close()
+    if not ok:
+        raise HTTPException(401, err)
+    return {"token": settings_auth.create_session(), "recovery_code": new_recovery}
+
+
+@router.post("/api/settings/auth/logout")
+async def settings_auth_logout(x_settings_token: str | None = Header(None)):
+    settings_auth.invalidate_session(x_settings_token)
+    return {"ok": True}
 active_ws: list[WebSocket] = []
 
 
@@ -110,7 +206,7 @@ async def get_source_icon(source_id: str):
     return FileResponse(path, media_type=content_type, headers={"Cache-Control": "public, max-age=300"})
 
 
-@router.get("/api/sources")
+@protected_router.get("/api/sources")
 async def list_sources():
     db = await get_db()
     cur = await db.execute("SELECT * FROM sources ORDER BY name")
@@ -119,7 +215,7 @@ async def list_sources():
     return rows
 
 
-@router.post("/api/sources")
+@protected_router.post("/api/sources")
 async def add_source(source: SourceIn):
     if source.connector_type not in CONNECTOR_REGISTRY:
         raise HTTPException(
@@ -147,7 +243,7 @@ async def add_source(source: SourceIn):
     return {"id": sid, "icon_url": icon_url}
 
 
-@router.delete("/api/sources/{source_id}")
+@protected_router.delete("/api/sources/{source_id}")
 async def delete_source(source_id: str):
     db = await get_db()
     await db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
@@ -169,7 +265,7 @@ class SourceEditIn(BaseModel):
     enabled: bool | None = None
 
 
-@router.patch("/api/sources/{source_id}")
+@protected_router.patch("/api/sources/{source_id}")
 async def update_source(source_id: str, payload: SourceEditIn):
     """
     Partial update — only fields actually present in the request body are
@@ -221,7 +317,7 @@ async def update_source(source_id: str, payload: SourceEditIn):
     return {"ok": True}
 
 
-@router.get("/api/sources/export")
+@protected_router.get("/api/sources/export")
 async def export_sources():
     db = await get_db()
     cur = await db.execute("SELECT name, url, category, color, icon_url, connector_type, interval_seconds FROM sources")
@@ -230,7 +326,7 @@ async def export_sources():
     return {"sources": rows}
 
 
-@router.post("/api/sources/import")
+@protected_router.post("/api/sources/import")
 async def import_sources(payload: dict):
     """Bulk-add sources, e.g. from a previously exported feeds.json. Skips duplicates."""
     db = await get_db()
@@ -636,12 +732,12 @@ async def get_stats():
     }
 
 
-@router.get("/api/backup")
+@protected_router.get("/api/backup")
 async def backup_database():
     return FileResponse(DB_PATH, filename="pantomath-backup.db", media_type="application/octet-stream")
 
 
-@router.post("/api/restore")
+@protected_router.post("/api/restore")
 async def restore_database_endpoint(file: UploadFile = File(...)):
     """
     Restores the database from a previously-downloaded /api/backup file.
@@ -682,7 +778,7 @@ async def restore_database_endpoint(file: UploadFile = File(...)):
 
 # ----------------------------------------------------------------- settings
 
-@router.get("/api/settings")
+@protected_router.get("/api/settings")
 async def get_settings():
     db = await get_db()
     cur = await db.execute("SELECT key, value FROM settings")
@@ -698,7 +794,7 @@ async def get_settings():
     }
 
 
-@router.post("/api/settings")
+@protected_router.post("/api/settings")
 async def update_settings(payload: dict):
     db = await get_db()
     for key, value in payload.items():
@@ -734,7 +830,7 @@ def _serialize_webhook(row: dict) -> dict:
     return out
 
 
-@router.get("/api/webhooks")
+@protected_router.get("/api/webhooks")
 async def list_webhooks():
     db = await get_db()
     cur = await db.execute("SELECT * FROM webhooks ORDER BY name")
@@ -743,7 +839,7 @@ async def list_webhooks():
     return rows
 
 
-@router.post("/api/webhooks")
+@protected_router.post("/api/webhooks")
 async def add_webhook(webhook: WebhookIn):
     if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high"):
         raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
@@ -785,7 +881,7 @@ class WebhookKeyIn(BaseModel):
     key: str
 
 
-@router.patch("/api/webhooks/{webhook_id}")
+@protected_router.patch("/api/webhooks/{webhook_id}")
 async def update_webhook(webhook_id: str, payload: WebhookEditIn):
     """Partial update, same pattern as sources — only fields present in the body are changed.
     A protected webhook requires the correct `key` before anything about it
@@ -837,7 +933,7 @@ async def update_webhook(webhook_id: str, payload: WebhookEditIn):
     return {"ok": True}
 
 
-@router.post("/api/webhooks/{webhook_id}/reveal")
+@protected_router.post("/api/webhooks/{webhook_id}/reveal")
 async def reveal_webhook_url(webhook_id: str, payload: WebhookKeyIn):
     """Returns the real URL for a webhook. Unprotected webhooks return it
     immediately; protected ones require the correct key. This — plus
@@ -862,7 +958,7 @@ async def reveal_webhook_url(webhook_id: str, payload: WebhookKeyIn):
     return {"url": row["url"]}
 
 
-@router.delete("/api/webhooks/{webhook_id}")
+@protected_router.delete("/api/webhooks/{webhook_id}")
 async def delete_webhook(webhook_id: str):
     db = await get_db()
     await db.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
@@ -871,7 +967,7 @@ async def delete_webhook(webhook_id: str):
     return {"ok": True}
 
 
-@router.post("/api/webhooks/{webhook_id}/test")
+@protected_router.post("/api/webhooks/{webhook_id}/test")
 async def test_webhook(webhook_id: str):
     """Sends a synthetic test payload immediately, so you can verify a webhook works without waiting for a real match."""
     db = await get_db()
@@ -908,7 +1004,7 @@ async def test_webhook(webhook_id: str):
 # ----------------------------------------------------------------- polling
 
 def make_poll_now_route(scheduler):
-    @router.post("/api/sources/{source_id}/poll")
+    @protected_router.post("/api/sources/{source_id}/poll")
     async def poll_now(source_id: str):
         db = await get_db()
         cur = await db.execute("SELECT * FROM sources WHERE id = ?", (source_id,))
@@ -920,7 +1016,7 @@ def make_poll_now_route(scheduler):
         await db.close()
         return {"ok": True}
 
-    @router.post("/api/sources/poll-all")
+    @protected_router.post("/api/sources/poll-all")
     async def poll_all_now():
         """
         Refreshes every enabled source immediately, bypassing each
@@ -949,7 +1045,7 @@ class ReprocessIn(BaseModel):
     deep_extraction: bool | None = None  # None = respect the current Settings toggle
 
 
-@router.post("/api/reprocess")
+@protected_router.post("/api/reprocess")
 async def reprocess(payload: ReprocessIn | None = None):
     """
     Re-runs severity/tagging/IOC extraction against items already on

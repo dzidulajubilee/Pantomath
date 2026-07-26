@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from pantomath import __version__
-from pantomath.api.routes import broadcast, make_poll_now_route, router
+from pantomath.api.routes import broadcast, make_poll_now_route, protected_router, router
 from pantomath.database.sqlite import init_db
 from pantomath.feeds.scheduler import Scheduler
 
@@ -27,7 +27,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Pantomath", lifespan=lifespan)
 
 app.include_router(router)
-make_poll_now_route(scheduler)  # registers /api/sources/{id}/poll on the same router
+app.include_router(protected_router)
+make_poll_now_route(scheduler)  # registers /api/sources/{id}/poll(-all) on protected_router
 
 
 @app.get("/")

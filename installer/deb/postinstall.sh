@@ -30,6 +30,12 @@ fi
 
 chown -R pantomath:pantomath /opt/pantomath
 
+# Without this, pantomath-admin only exists at /opt/pantomath/venv/bin/
+# and needs its full path typed out every time — not what anyone
+# expects from a command meant to be run occasionally, by hand, on a
+# real terminal (reset-settings-password, setup-https).
+ln -sf /opt/pantomath/venv/bin/pantomath-admin /usr/local/bin/pantomath-admin
+
 systemctl daemon-reload
 systemctl enable pantomath.service
 systemctl restart pantomath.service || systemctl start pantomath.service
@@ -40,4 +46,5 @@ echo "Dashboard: http://localhost:7373"
 echo "No sources are pre-loaded — add your feeds from the UI."
 echo "Data: /var/lib/pantomath/pantomath.db"
 echo "Logs: journalctl -u pantomath -f"
+echo "Admin commands: pantomath-admin --help (e.g. 'pantomath-admin setup-https' for HTTPS via nginx)"
 echo ""

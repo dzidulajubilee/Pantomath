@@ -414,22 +414,38 @@ function currentView() {
 
 // -------------------------------------------------------------- vendors / actors
 
+// The currently selected vendor/actor chip, if any — tracked at module
+// level (same pattern as iocDrilldown/currentIocType/liveCurrentPage) so
+// an auto-refresh of this view (a WebSocket `new_items` broadcast, or the
+// 30s poll in init(), both of which call VIEW_LOADERS[currentView()]?.())
+// can restore the user's selection instead of always re-selecting the
+// first chip and silently discarding whatever they had filtered to.
+let selectedVendor = null;
+let selectedActor = null;
+
 async function loadVendors() {
   const tags = await (await fetch('/api/tags?type=vendor&limit=30')).json();
   const chipsEl = document.getElementById('vendorChips');
   if (tags.length === 0) {
     chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No vendors detected in stored items yet.</div>`;
+    selectedVendor = null;
   } else {
     chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-vendor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
+        selectedVendor = chip.dataset.vendor;
         chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         const items = await fetchItems({ limit: 100, vendor: chip.dataset.vendor });
         renderFeedCards(document.getElementById('feedVendors'), items, { onBookmarkChange: loadVendors });
       };
     });
-    chipsEl.querySelector('.tag-chip').click();
+    // Restore the previously selected chip if it still exists in this
+    // refreshed list; only fall back to the first chip if there was no
+    // prior selection, or the previously selected vendor has disappeared.
+    const toSelect = (selectedVendor && chipsEl.querySelector(`.tag-chip[data-vendor="${CSS.escape(selectedVendor)}"]`))
+      || chipsEl.querySelector('.tag-chip');
+    toSelect.click();
   }
   if (tags.length === 0) document.getElementById('feedVendors').innerHTML = '';
 }
@@ -439,17 +455,22 @@ async function loadThreatActors() {
   const chipsEl = document.getElementById('actorChips');
   if (tags.length === 0) {
     chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No threat actors detected in stored items yet.</div>`;
+    selectedActor = null;
   } else {
     chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-actor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
+        selectedActor = chip.dataset.actor;
         chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         const items = await fetchItems({ limit: 100, actor: chip.dataset.actor });
         renderFeedCards(document.getElementById('feedActors'), items, { onBookmarkChange: loadThreatActors });
       };
     });
-    chipsEl.querySelector('.tag-chip').click();
+    // Same restore-over-reset behavior as loadVendors() above.
+    const toSelect = (selectedActor && chipsEl.querySelector(`.tag-chip[data-actor="${CSS.escape(selectedActor)}"]`))
+      || chipsEl.querySelector('.tag-chip');
+    toSelect.click();
   }
   if (tags.length === 0) document.getElementById('feedActors').innerHTML = '';
 }
@@ -955,7 +976,25 @@ document.getElementById('refreshAllBtn').onclick = async () => {
   btn.textContent = original;
 };
 
-document.getElementById('backupBtn').onclick = () => { window.location.href = '/api/backup'; };
+document.getElementById('backupBtn').onclick = async () => {
+  // A raw `window.location.href = url` navigation does NOT go through
+  // the fetch() wrapper that attaches X-Settings-Token (it only
+  // intercepts calls made via fetch(), not full page navigations) — so
+  // this endpoint, being protected, would 401 even for a properly
+  // logged-in user, and the browser would navigate away from the app
+  // entirely to display the raw error JSON. Fetching as a blob and
+  // triggering the download via an anchor element keeps everything
+  // properly authenticated and keeps the user on the actual app page.
+  const res = await fetch('/api/backup');
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', () => {}); return; }
+  if (!res.ok) { alert('Backup download failed: ' + res.status); return; }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pantomath-backup.db';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 
 document.getElementById('restoreBtn').onclick = () => { document.getElementById('restoreFileInput').click(); };
 
@@ -983,7 +1022,27 @@ document.getElementById('restoreFileInput').onchange = async (e) => {
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch('/api/restore', { method: 'POST', body: formData });
-    const body = await res.json();
+    // Read as text first and parse manually — a raw fetch failure this app
+    // doesn't control (e.g. a reverse proxy like nginx rejecting the
+    // upload before it ever reaches the app, returning its own HTML error
+    // page for a 413/502/etc.) is not JSON, and calling res.json()
+    // directly throws an opaque "Unexpected token '<'..." SyntaxError that
+    // buries the actual problem. Handle that case with an explicit,
+    // legible message instead.
+    const raw = await res.text();
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      const hint = res.status === 413
+        ? ' — the upload was likely rejected by a reverse proxy (e.g. nginx) before reaching Pantomath. ' +
+          'If you set up HTTPS via `pantomath-admin setup-https`, re-run it with -y to pick up the raised ' +
+          'upload-size limit, then try again.'
+        : '';
+      resultEl.textContent = `Restore failed: server returned an unexpected non-JSON response (HTTP ${res.status})${hint}`;
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
     if (!res.ok) {
       resultEl.textContent = `Restore failed: ${body.detail || 'unknown error'}`;
       resultEl.style.color = 'var(--red)';

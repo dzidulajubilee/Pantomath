@@ -56,6 +56,14 @@ server {{
     ssl_certificate_key {key};
     ssl_protocols       TLSv1.2 TLSv1.3;
 
+    # nginx's own default (1MB) is far below Pantomath's application-level
+    # upload cap (MAX_UPLOAD_BYTES in pantomath/database/restore.py, 2GB) —
+    # without raising it here, nginx rejects a database-restore upload with
+    # its own generic HTML 413 page before the request ever reaches
+    # Pantomath, which is confusing (looks like a JSON-parsing crash on the
+    # frontend) and defeats the whole point of that higher application cap.
+    client_max_body_size 2100M;
+
     location / {{
         proxy_pass http://127.0.0.1:{port};
         proxy_set_header Host $host;
@@ -101,7 +109,7 @@ def _try_systemctl(*args: str) -> bool:
     correct and complete regardless of whether systemctl itself
     succeeds in THIS environment (e.g. a container without a real
     systemd PID 1), and the admin can always apply them manually
-    (`systemctl reload nginx` / `systemctl restart pantomath`).
+    (`systemctl reload-or-restart nginx` / `systemctl restart pantomath`).
     """
     try:
         _run(["systemctl", *args], capture_output=True, text=True)
@@ -193,7 +201,16 @@ def setup_https(port: int = 7373, assume_yes: bool = False) -> None:
     else:
         print("Skipped — pantomath remains reachable directly on its own port too, not just through nginx.")
 
-    _try_systemctl("reload", "nginx")
+    # reload alone only affects an ALREADY-running nginx (SIGHUP to the
+    # master process) — if nginx was installed but never actually
+    # started (can happen depending on the install path, or if it had
+    # been stopped for any reason beforehand), reload silently does
+    # nothing and nginx never ends up listening on 80/443 at all.
+    # reload-or-restart correctly handles both cases: starts it if it's
+    # not running, reloads it if it is. enable ensures it also comes up
+    # on the next boot (idempotent — safe even if already enabled).
+    _try_systemctl("enable", "nginx")
+    _try_systemctl("reload-or-restart", "nginx")
 
     print("\nDone.")
     print("Visit https://<this-server>/ — your browser will warn about the self-signed")

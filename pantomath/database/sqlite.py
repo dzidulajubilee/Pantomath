@@ -5,7 +5,7 @@ import uuid
 
 import aiosqlite
 
-from pantomath.database.models import MIGRATIONS, SCHEMA
+from pantomath.database.models import INDEX_SCHEMA, MIGRATIONS, TABLE_SCHEMA
 
 DB_PATH = os.environ.get("PANTOMATH_DB", "/var/lib/pantomath/pantomath.db")
 
@@ -60,9 +60,14 @@ async def _run_migrations(db):
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = await get_db()
-    await db.executescript(SCHEMA)
+    await db.executescript(TABLE_SCHEMA)
     await db.commit()
     await _run_migrations(db)
+    # Indexes are created AFTER migrations, deliberately — see the comment
+    # on INDEX_SCHEMA in models.py for why running this earlier can fail
+    # against a genuinely old database.
+    await db.executescript(INDEX_SCHEMA)
+    await db.commit()
 
     # Only seed from config/feeds.json on a genuinely empty database, and only
     # if the file actually has entries. An empty/missing file means: start

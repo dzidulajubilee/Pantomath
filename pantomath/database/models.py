@@ -3,7 +3,7 @@ Schema definitions for Pantomath's SQLite store.
 Kept as plain SQL DDL (no ORM) — the dataset is small and the queries are simple.
 """
 
-SCHEMA = """
+TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -41,10 +41,6 @@ CREATE TABLE IF NOT EXISTS items (
     FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at DESC);
-CREATE INDEX IF NOT EXISTS idx_items_source ON items(source_id);
-CREATE INDEX IF NOT EXISTS idx_items_severity ON items(severity);
-
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -69,6 +65,28 @@ CREATE TABLE IF NOT EXISTS webhooks (
     allow_insecure_tls INTEGER DEFAULT 0  -- opt-in per-webhook: 1 skips TLS certificate verification (self-signed certs, internal CAs)
 );
 """
+
+# Kept separate from TABLE_SCHEMA above and applied AFTER _run_migrations()
+# in sqlite.py's init_db() — deliberately, not just for tidiness. An index
+# here can reference a column (e.g. items.severity) that only exists on a
+# genuinely old/pre-migration database once _run_migrations() has added it;
+# CREATE TABLE IF NOT EXISTS is a no-op against an already-existing table,
+# so if this ran BEFORE migrations, indexing a column that migration hasn't
+# added yet would fail with "no such column" on any database old enough to
+# be missing it. This bit a real restore-of-an-old-backup scenario during
+# development (see tests/test_database_restore.py) before being caught.
+INDEX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_items_source ON items(source_id);
+CREATE INDEX IF NOT EXISTS idx_items_severity ON items(severity);
+"""
+
+# Concatenation of the two above — kept for callers that just want a
+# complete, ready-to-use schema in one executescript() call (e.g. tests
+# building a standalone fixture .db file from scratch, where there's no
+# pre-existing-table-missing-a-column concern since everything is created
+# fresh in the right order regardless of statement grouping).
+SCHEMA = TABLE_SCHEMA + INDEX_SCHEMA
 
 # Columns added after the original CREATE TABLE statements above.
 # `CREATE TABLE IF NOT EXISTS` is a no-op against an already-existing

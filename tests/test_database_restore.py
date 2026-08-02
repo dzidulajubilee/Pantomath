@@ -170,7 +170,116 @@ async def test_restore_rejects_upload_when_insufficient_disk_space(monkeypatch):
     assert "disk space" in resp.json()["detail"].lower()
 
 
-async def test_restore_temp_file_is_created_with_owner_only_permissions():
+async def test_restore_of_an_old_schema_backup_is_migrated_forward_to_current_schema(tmp_path):
+    """
+    Real reported issue: a backup taken on an older Pantomath version can
+    predate a column added by a later migration (see MIGRATIONS in
+    pantomath/database/models.py). validate_sqlite_backup() only requires
+    the core tables to exist, not every column — restoring such a backup
+    verbatim used to leave the *running* process serving a database
+    missing columns its own queries expect, breaking until someone
+    thought to restart the service by hand. The restore endpoint must now
+    re-run the same schema+migrations step the app runs on every normal
+    startup (init_db()) immediately after the swap, so the restored file
+    is brought forward to the current schema without a manual restart.
+    """
+    await _seed_live_db_with_marker_item(marker_id="original-item")
+
+    # Build a deliberately OLD-schema replacement: has all four required
+    # core tables and every BASELINE column (so validation passes, and so
+    # this doesn't corrupt the shared test DB_PATH for tests running after
+    # this one), but is missing columns that were only ever added later via
+    # MIGRATIONS — exactly what a backup taken before those migrations
+    # shipped would look like. Deliberately does NOT touch columns like
+    # `link`/`summary`/`published` that have existed since the very
+    # original schema and are never touched by MIGRATIONS at all.
+    old_schema = """
+    CREATE TABLE sources (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL UNIQUE,
+        category TEXT DEFAULT 'general', color TEXT DEFAULT '#5eead4',
+        interval_seconds INTEGER DEFAULT 300, enabled INTEGER DEFAULT 1,
+        last_fetched REAL DEFAULT 0, last_status TEXT DEFAULT 'pending',
+        created_at REAL DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE items (
+        id TEXT PRIMARY KEY, source_id TEXT NOT NULL, title TEXT NOT NULL,
+        link TEXT, summary TEXT, published REAL, fetched_at REAL, guid TEXT,
+        UNIQUE(source_id, guid)
+    );
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE webhooks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, enabled INTEGER DEFAULT 1,
+        keyword TEXT DEFAULT '', source_id TEXT DEFAULT '', min_severity TEXT DEFAULT '',
+        created_at REAL DEFAULT (strftime('%s','now')), last_triggered REAL DEFAULT 0,
+        last_status TEXT DEFAULT 'pending'
+    );
+    """
+    old_path = tmp_path / "old-schema-backup.db"
+    conn = sqlite3.connect(str(old_path))
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO sources (id, name, url, category) VALUES ('old-src', 'Old Source', 'http://old.example.com/feed', 'news')"
+    )
+    conn.execute(
+        "INSERT INTO items (id, source_id, title, guid, fetched_at) VALUES ('old-item', 'old-src', 'Item from an old-schema backup', 'old-item-guid', 1000)"
+    )
+    conn.commit()
+    conn.close()
+
+    # Sanity-check the fixture is genuinely missing the column, so this
+    # test would actually fail without the fix.
+    check_conn = sqlite3.connect(str(old_path))
+    columns = {row[1] for row in check_conn.execute("PRAGMA table_info(webhooks)")}
+    check_conn.close()
+    assert "allow_insecure_tls" not in columns, "test fixture must genuinely predate the migration"
+
+    with open(old_path, "rb") as f:
+        resp = client.post("/api/restore", files={"file": ("old-schema-backup.db", f.read(), "application/octet-stream")})
+    assert resp.status_code == 200, resp.text
+
+    # The live database, on a brand new connection, must now have the
+    # column the current code expects — proving init_db()'s migrations
+    # ran against the just-restored file, not just that the swap happened.
+    db = await get_db()
+    cur = await db.execute("PRAGMA table_info(webhooks)")
+    live_columns = {row["name"] for row in await cur.fetchall()}
+    cur = await db.execute("SELECT id FROM items")
+    ids = {r["id"] for r in await cur.fetchall()}
+    await db.close()
+    assert "allow_insecure_tls" in live_columns, (
+        "restoring an old-schema backup must migrate it forward to the current schema, "
+        "not leave the running process serving a database missing columns it expects"
+    )
+    assert ids == {"old-item"}, "the restored (old-schema) data must still be intact after migration"
+
+    # And a query that touches the newly-migrated column must actually
+    # succeed against the live DB_PATH — not just that PRAGMA table_info
+    # reports the column exists.
+    db = await get_db()
+    await db.execute("SELECT allow_insecure_tls FROM webhooks")
+    await db.close()
+
+
+async def test_restore_endpoint_wiring_reapplies_schema_and_migrations():
+    """
+    Guards against someone removing the init_db() call from the restore
+    endpoint entirely (the previous test would still pass by coincidence
+    if init_db() were a no-op for some other reason, but this pins the
+    actual wiring).
+    """
+    import inspect
+
+    from pantomath.api import routes
+
+    source = inspect.getsource(routes.restore_database_endpoint)
+    assert "init_db()" in source, (
+        "restore_database_endpoint must call init_db() after swapping in the "
+        "restored file, to bring an older-schema backup forward to the current schema"
+    )
+    # Must run after the swap (restore_database), not before it — running
+    # it before would migrate the database about to be REPLACED, which is
+    # pointless.
+    assert source.index("run_in_executor(None, restore_database, tmp_path)") < source.index("await init_db()")
     """
     The temp file holding (potentially very sensitive — a full database)
     upload contents must never be readable by anything other than the

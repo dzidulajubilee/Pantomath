@@ -15,6 +15,7 @@ Priorities, in order of how bad it would be to get them wrong:
   3. assume_yes correctly bypasses every prompt, and declining a prompt
      correctly leaves things untouched rather than proceeding anyway.
 """
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -142,6 +143,35 @@ def test_config_file_contains_the_correct_port_and_websocket_headers():
     assert "return 301 https://$host$request_uri;" in config
 
 
+def test_config_raises_body_size_limit_above_pantomaths_own_restore_upload_cap():
+    """
+    Real reported bug: nginx's own default client_max_body_size (1MB) is
+    far below MAX_UPLOAD_BYTES in pantomath/database/restore.py (2GB) —
+    without an explicit client_max_body_size in the generated config, a
+    real database-restore upload gets rejected by nginx ITSELF with its
+    own generic HTML 413 error page before the request ever reaches
+    Pantomath. The frontend then fails trying to JSON-parse that HTML
+    body, surfacing as a confusing "Unexpected token '<'" error that
+    looks like an app bug rather than a proxy config gap.
+    """
+    from pantomath.database.restore import MAX_UPLOAD_BYTES
+
+    https_setup.setup_https(assume_yes=True)
+    config = https_setup.SITE_AVAILABLE.read_text()
+
+    match = re.search(r"client_max_body_size\s+(\d+)([kKmMgG]?);", config)
+    assert match, "generated nginx config must set client_max_body_size explicitly"
+    value, unit = match.groups()
+    multiplier = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[unit.lower()]
+    configured_bytes = int(value) * multiplier
+    assert configured_bytes >= MAX_UPLOAD_BYTES, (
+        f"client_max_body_size ({configured_bytes} bytes) must be at least as large as "
+        f"Pantomath's own restore-upload cap ({MAX_UPLOAD_BYTES} bytes), or nginx will "
+        f"reject valid restore uploads before the app's own (more informative) validation "
+        f"ever runs"
+    )
+
+
 def test_default_site_is_renamed_not_deleted_when_confirmed(monkeypatch):
     https_setup.DEFAULT_SITE_ENABLED.write_text("stock nginx default site")
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
@@ -171,3 +201,31 @@ def test_assume_yes_bypasses_every_prompt(monkeypatch):
     monkeypatch.setattr("builtins.input", fail_if_called)
 
     https_setup.setup_https(assume_yes=True)  # must not raise
+
+
+def test_nginx_is_started_not_just_reloaded():
+    """
+    Regression test for a real bug: 'systemctl reload nginx' only
+    affects an ALREADY-RUNNING nginx (it's a SIGHUP to the master
+    process) — if nginx had been installed but never actually started
+    (confirmed to happen in practice, not just theoretically), a bare
+    reload silently does nothing and nginx never ends up listening on
+    80/443 at all, even though every file this command wrote was
+    correct. Must use 'enable' (so it also survives a reboot) plus
+    'reload-or-restart' (correctly starts a stopped service OR reloads
+    a running one), not a bare 'reload'.
+    """
+    systemctl_calls = []
+    orig_run = https_setup.subprocess.run
+
+    def tracking_run(cmd, **kwargs):
+        if cmd and cmd[0] == "systemctl":
+            systemctl_calls.append(tuple(cmd[1:]))
+        return orig_run(cmd, **kwargs)
+
+    with patch.object(https_setup.subprocess, "run", side_effect=tracking_run):
+        https_setup.setup_https(assume_yes=True)
+
+    assert ("enable", "nginx") in systemctl_calls, f"expected 'systemctl enable nginx', got: {systemctl_calls}"
+    assert ("reload-or-restart", "nginx") in systemctl_calls, f"expected 'systemctl reload-or-restart nginx', got: {systemctl_calls}"
+    assert ("reload", "nginx") not in systemctl_calls, "a bare 'reload' does nothing if nginx wasn't already running — this is the exact bug being regression-tested"

@@ -16,7 +16,7 @@ from pantomath.database.restore import (
     save_upload_to_temp,
     validate_sqlite_backup,
 )
-from pantomath.database.sqlite import DB_PATH, get_db
+from pantomath.database.sqlite import DB_PATH, get_db, init_db
 from pantomath.intelligence.enrichment import (
     derive_icon_url,
     fetch_and_cache_icon_sync,
@@ -762,6 +762,22 @@ async def restore_database_endpoint(file: UploadFile = File(...)):
         await loop.run_in_executor(None, validate_sqlite_backup, tmp_path)
         # on success, restore_database consumes/moves tmp_path via os.replace
         result = await loop.run_in_executor(None, restore_database, tmp_path)
+        # validate_sqlite_backup() only confirms the CORE tables exist —
+        # it deliberately doesn't check every column, since that would
+        # make every backup taken on an older version "incompatible" the
+        # moment a new migration ships, even though the whole point of the
+        # migration system is that older databases are safe to bring
+        # forward. A backup taken before a later column was added (e.g.
+        # webhooks.allow_insecure_tls) is exactly this case: swapping it in
+        # verbatim leaves the *running* process — which never restarts as
+        # part of a restore — serving a database missing columns its own
+        # queries expect, failing with "no such column" until someone
+        # thinks to restart the service by hand. Re-running the same
+        # schema+migrations step the app already runs on every normal
+        # startup (init_db()) brings the just-restored file up to the
+        # current schema immediately, so an older backup restores cleanly
+        # without a manual restart.
+        await init_db()
         return result
     except RestoreValidationError as e:
         raise HTTPException(400, str(e))

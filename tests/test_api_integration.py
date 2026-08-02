@@ -15,6 +15,9 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 async def _clean(fresh_db):
+    resp = client.post('/api/settings/auth/setup', json={'password': 'test-password-123'})
+    assert resp.status_code == 200, f'test auth setup failed: {resp.text}'
+    client.headers['X-Settings-Token'] = resp.json()['token']
     yield
 
 

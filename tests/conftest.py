@@ -39,4 +39,13 @@ async def fresh_db():
     await db.execute("INSERT INTO settings (key, value) VALUES ('deep_extraction', '0')")
     await db.commit()
     await db.close()
+
+    # settings_auth's session tokens live in a module-level in-memory
+    # dict, not the database — DELETE FROM settings above resets the
+    # password/lockout state, but a still-unexpired token from a
+    # previous test would otherwise keep validating against the fresh
+    # (unrelated) database this test is about to use.
+    from pantomath.auth import settings_auth
+    settings_auth._sessions.clear()
+
     yield

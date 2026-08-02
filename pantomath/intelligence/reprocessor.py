@@ -22,6 +22,7 @@ from pantomath.intelligence.scoring import score_severity
 from pantomath.intelligence.tagging import extract_tags
 
 MAX_CONCURRENT_FETCHES = 5
+BATCH_SIZE = 200  # bounds memory + in-flight asyncio tasks regardless of table size
 
 
 async def _deep_extraction_enabled(db) -> bool:
@@ -56,39 +57,62 @@ async def reprocess_items(db, source_id: str | None = None, use_deep_extraction:
     this run specifically (e.g. force it on for a one-time backfill even
     if it's normally off); leave as None to respect the current setting.
 
+    Processes in fixed-size batches (BATCH_SIZE) rather than loading
+    every matching row into memory at once and spinning up one asyncio
+    task per row up front. On an install with a large history, "reprocess
+    all" with deep extraction on used to build one Python dict/list for
+    the entire items table plus a task per row (only 5 running
+    concurrently at a time, thanks to the semaphore, but all of them
+    allocated immediately) — a real memory spike proportional to total
+    item count. Batching bounds that to BATCH_SIZE regardless of how
+    large the table is, and commits per batch instead of one giant
+    transaction held open for the whole run.
+
     Returns {"processed": N, "sources": N} — the number of items updated
     and how many distinct sources they spanned.
     """
-    query = "SELECT id, title, summary, link, source_id FROM items"
-    params = []
-    if source_id:
-        query += " WHERE source_id = ?"
-        params.append(source_id)
-    cur = await db.execute(query, params)
-    rows = [dict(r) for r in await cur.fetchall()]
-
     if use_deep_extraction is None:
         use_deep_extraction = await _deep_extraction_enabled(db)
 
-    article_texts = await _fetch_article_texts(rows) if use_deep_extraction else {}
+    base_query = "SELECT id, title, summary, link, source_id FROM items"
+    params: list = []
+    if source_id:
+        base_query += " WHERE source_id = ?"
+        params.append(source_id)
+    base_query += " ORDER BY id"
 
-    for row in rows:
-        extraction_text = " ".join(filter(None, [row["summary"] or "", article_texts.get(row["id"], "")]))
-        severity = score_severity(row["title"], extraction_text)
-        vendors, actors = extract_tags(row["title"], extraction_text)
-        iocs = extract_iocs(row["title"], extraction_text)
+    processed = 0
+    distinct_sources: set[str] = set()
+    offset = 0
 
-        await db.execute(
-            """UPDATE items SET severity=?, vendors=?, actors=?, cves=?, ips=?, hashes=?, emails=?
-               WHERE id=?""",
-            (
-                severity, ",".join(vendors), ",".join(actors),
-                ",".join(iocs["cve"]), ",".join(iocs["ip"]),
-                ",".join(iocs["hash"]), ",".join(iocs["email"]),
-                row["id"],
-            ),
-        )
+    while True:
+        cur = await db.execute(base_query + " LIMIT ? OFFSET ?", [*params, BATCH_SIZE, offset])
+        batch = [dict(r) for r in await cur.fetchall()]
+        if not batch:
+            break
 
-    await db.commit()
-    distinct_sources = {row["source_id"] for row in rows}
-    return {"processed": len(rows), "sources": len(distinct_sources)}
+        article_texts = await _fetch_article_texts(batch) if use_deep_extraction else {}
+
+        for row in batch:
+            extraction_text = " ".join(filter(None, [row["summary"] or "", article_texts.get(row["id"], "")]))
+            severity = score_severity(row["title"], extraction_text)
+            vendors, actors = extract_tags(row["title"], extraction_text)
+            iocs = extract_iocs(row["title"], extraction_text)
+
+            await db.execute(
+                """UPDATE items SET severity=?, vendors=?, actors=?, cves=?, ips=?, hashes=?, emails=?
+                   WHERE id=?""",
+                (
+                    severity, ",".join(vendors), ",".join(actors),
+                    ",".join(iocs["cve"]), ",".join(iocs["ip"]),
+                    ",".join(iocs["hash"]), ",".join(iocs["email"]),
+                    row["id"],
+                ),
+            )
+            distinct_sources.add(row["source_id"])
+
+        await db.commit()
+        processed += len(batch)
+        offset += BATCH_SIZE
+
+    return {"processed": processed, "sources": len(distinct_sources)}

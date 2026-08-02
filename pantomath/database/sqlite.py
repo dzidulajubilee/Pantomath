@@ -5,7 +5,7 @@ import uuid
 
 import aiosqlite
 
-from pantomath.database.models import MIGRATIONS, SCHEMA
+from pantomath.database.models import INDEX_SCHEMA, MIGRATIONS, TABLE_SCHEMA
 
 DB_PATH = os.environ.get("PANTOMATH_DB", "/var/lib/pantomath/pantomath.db")
 
@@ -22,6 +22,16 @@ async def get_db():
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA foreign_keys = ON")
+    # WAL lets readers (API requests) proceed while the scheduler's
+    # background poll is mid-write, instead of blocking behind SQLite's
+    # default rollback-journal exclusive lock — this app has exactly that
+    # pattern (one continuous background writer + many concurrent API
+    # reads) so it matters here, not just as a generic best practice.
+    # busy_timeout is the backstop for the remaining moments two writers
+    # do overlap (e.g. "poll all now" plus the scheduler tick): retry
+    # for up to 5s instead of immediately raising "database is locked".
+    await db.execute("PRAGMA journal_mode = WAL")
+    await db.execute("PRAGMA busy_timeout = 5000")
     return db
 
 
@@ -50,9 +60,14 @@ async def _run_migrations(db):
 async def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = await get_db()
-    await db.executescript(SCHEMA)
+    await db.executescript(TABLE_SCHEMA)
     await db.commit()
     await _run_migrations(db)
+    # Indexes are created AFTER migrations, deliberately — see the comment
+    # on INDEX_SCHEMA in models.py for why running this earlier can fail
+    # against a genuinely old database.
+    await db.executescript(INDEX_SCHEMA)
+    await db.commit()
 
     # Only seed from config/feeds.json on a genuinely empty database, and only
     # if the file actually has entries. An empty/missing file means: start

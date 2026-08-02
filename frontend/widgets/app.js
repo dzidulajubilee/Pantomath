@@ -1,9 +1,211 @@
 // ---------------------------------------------------------------- helpers
 
+// ---------------------------------------------------------------- helpers
+
+// ------------------------------------------------------- settings auth
+
+// Only Settings and Sources are password-gated (server-side, via
+// pantomath/api/routes.py's protected_router) — the rest of the app
+// (Dashboard, Live Feed, IOCs, etc.) is intentionally left open, since
+// this is designed as an always-visible SOC/NOC display. See
+// pantomath/auth/settings_auth.py for the full reasoning.
+let settingsToken = sessionStorage.getItem('pantomath_settings_token') || null;
+let _authUnlockedCallback = null;
+
+function setSettingsToken(token) {
+  settingsToken = token;
+  if (token) sessionStorage.setItem('pantomath_settings_token', token);
+  else sessionStorage.removeItem('pantomath_settings_token');
+}
+
+// Every fetch() call in the app is routed through this wrapper (it
+// replaces the global function once, here, rather than editing each of
+// the dozens of individual call sites across the app — safer, since a
+// hand-edited call site is easy to miss and this project has already
+// hit that exact mistake once, with the href-escaping fix). The header
+// is harmless on unprotected routes — nothing there reads it — so
+// sending it unconditionally is simpler and safer than trying to
+// enumerate which URLs need it.
+(function installSettingsAuthFetchWrapper() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function (url, opts = {}) {
+    if (settingsToken) {
+      opts = { ...opts, headers: { ...(opts.headers || {}), 'X-Settings-Token': settingsToken } };
+    }
+    return nativeFetch(url, opts);
+  };
+})();
+
+function _resetAuthGateForm() {
+  ['authSetupPassword', 'authSetupPasswordConfirm', 'authLoginPassword', 'authRecoveryCode', 'authRecoveryNewPassword'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  ['authSetupError', 'authLoginError', 'authRecoveryError'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '';
+  });
+}
+
+// Shows the lock modal. `mode` is 'setup' (no password configured yet)
+// or 'login' (returning visit). `onUnlocked` is called once
+// authentication actually succeeds — the caller's view loader passes
+// itself in, so e.g. loadSettingsView() re-runs automatically right
+// after a successful login instead of the operator having to navigate
+// away and back.
+function showAuthGate(mode, onUnlocked) {
+  _authUnlockedCallback = onUnlocked;
+  _resetAuthGateForm();
+  document.getElementById('authStateSetup').style.display = mode === 'setup' ? '' : 'none';
+  document.getElementById('authStateLogin').style.display = mode === 'login' ? '' : 'none';
+  document.getElementById('authStateRecovery').style.display = 'none';
+  document.getElementById('authStateShowRecovery').style.display = 'none';
+  document.getElementById('settingsAuthOverlay').classList.add('open');
+}
+
+function hideAuthGate() {
+  document.getElementById('settingsAuthOverlay').classList.remove('open');
+}
+
+function showRecoveryCodeScreen(code) {
+  ['authStateSetup', 'authStateLogin', 'authStateRecovery'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  document.getElementById('authStateShowRecovery').style.display = '';
+  document.getElementById('authRecoveryCodeDisplay').textContent = code;
+  document.getElementById('settingsAuthOverlay').classList.add('open');
+}
+
+// Called at the top of loadSettingsView()/loadSourcesView(). Returns
+// true if already unlocked (a stale/expired token is still handled —
+// each loader checks the status of its own first protected fetch and
+// falls back to showAuthGate('login', ...) if it comes back 401,
+// exactly like an expired session should). Returns false if it just
+// rendered the lock screen, in which case the caller should stop
+// without trying to load real content yet.
+async function ensureSettingsUnlocked(onUnlocked) {
+  if (settingsToken) return true;
+  if (document.getElementById('settingsAuthOverlay').classList.contains('open')) {
+    // Already showing the lock screen — possibly mid-recovery-flow, or
+    // the user is actively typing a password. A redundant/overlapping
+    // call here (e.g. two loadSettingsView() calls in flight at once,
+    // or the 30s periodic refresh firing while still locked) must not
+    // reset the visible state back to the login screen and blow away
+    // whatever progress the user has made. Still worth updating which
+    // callback fires on eventual success, in case they navigated to a
+    // different gated page while locked.
+    _authUnlockedCallback = onUnlocked;
+    return false;
+  }
+  const status = await (await fetch('/api/settings/auth/status')).json();
+  showAuthGate(status.configured ? 'login' : 'setup', onUnlocked);
+  return false;
+}
+
+document.getElementById('authSetupSubmit').onclick = async () => {
+  const pw = document.getElementById('authSetupPassword').value;
+  const pw2 = document.getElementById('authSetupPasswordConfirm').value;
+  const errEl = document.getElementById('authSetupError');
+  if (pw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  if (pw !== pw2) { errEl.textContent = 'Passwords do not match.'; return; }
+  const res = await fetch('/api/settings/auth/setup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Setup failed.'; return; }
+  setSettingsToken(body.token);
+  showRecoveryCodeScreen(body.recovery_code);
+};
+
+document.getElementById('authLoginSubmit').onclick = async () => {
+  const pw = document.getElementById('authLoginPassword').value;
+  const errEl = document.getElementById('authLoginError');
+  const res = await fetch('/api/settings/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Login failed.'; return; }
+  setSettingsToken(body.token);
+  hideAuthGate();
+  _authUnlockedCallback?.();
+};
+document.getElementById('authLoginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('authLoginSubmit').click(); });
+
+document.getElementById('authForgotLink').onclick = () => {
+  document.getElementById('authStateLogin').style.display = 'none';
+  document.getElementById('authStateRecovery').style.display = '';
+};
+document.getElementById('authRecoveryBack').onclick = () => {
+  document.getElementById('authStateRecovery').style.display = 'none';
+  document.getElementById('authStateLogin').style.display = '';
+};
+
+document.getElementById('authRecoverySubmit').onclick = async () => {
+  const code = document.getElementById('authRecoveryCode').value;
+  const newPw = document.getElementById('authRecoveryNewPassword').value;
+  const errEl = document.getElementById('authRecoveryError');
+  if (newPw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  const res = await fetch('/api/settings/auth/recover', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recovery_code: code, new_password: newPw }),
+  });
+  const body = await res.json();
+  if (!res.ok) { errEl.textContent = body.detail || 'Recovery failed.'; return; }
+  setSettingsToken(body.token);
+  showRecoveryCodeScreen(body.recovery_code);
+};
+
+document.getElementById('authRecoveryCodeContinue').onclick = () => {
+  hideAuthGate();
+  _authUnlockedCallback?.();
+};
+
+async function lockSettings() {
+  await fetch('/api/settings/auth/logout', { method: 'POST' });
+  setSettingsToken(null);
+  if (currentView() === 'settings' || currentView() === 'sources') {
+    VIEW_LOADERS[currentView()]();
+  }
+}
+document.getElementById('lockSettingsBtn').onclick = lockSettings;
+document.getElementById('lockSourcesBtn').onclick = lockSettings;
+
 function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str || '';
   return d.innerHTML;
+}
+// escapeHtml (above) is safe for TEXT NODE content — e.g. ${escapeHtml(i.title)}
+// as an element's inner text — because textContent->innerHTML round-tripping
+// escapes &, <, > but deliberately leaves quote characters untouched (quotes
+// have no special meaning inside text content). That makes it UNSAFE on its
+// own for attribute-value contexts like href="${...}": a value containing a
+// literal " can close the attribute early and inject new ones, e.g.
+// `" onmouseover="alert(1)` becomes a live onmouseover handler on the tag.
+// escapeAttr additionally escapes quotes for exactly that context.
+function escapeAttr(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+// Every item.link in this app originates from external, only semi-trusted
+// content — RSS/Atom feed XML (a compromised or malicious source can put
+// anything in a <link> tag) or a restored database backup. Used directly as
+// an href, a javascript: or data: URL there would execute on click even with
+// perfect HTML-attribute escaping, since the injection isn't via HTML syntax
+// at all — it's via the URL scheme itself. Only http(s) links are ever
+// rendered as real hrefs; anything else (including a malformed/unparseable
+// URL) safely falls back to a dead '#' link instead of silently doing
+// nothing or, worse, executing.
+function safeHref(url) {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return escapeAttr(url);
+    }
+  } catch (e) { /* fall through */ }
+  return '#';
 }
 function stripHtml(html) {
   const d = document.createElement('div');
@@ -212,22 +414,38 @@ function currentView() {
 
 // -------------------------------------------------------------- vendors / actors
 
+// The currently selected vendor/actor chip, if any — tracked at module
+// level (same pattern as iocDrilldown/currentIocType/liveCurrentPage) so
+// an auto-refresh of this view (a WebSocket `new_items` broadcast, or the
+// 30s poll in init(), both of which call VIEW_LOADERS[currentView()]?.())
+// can restore the user's selection instead of always re-selecting the
+// first chip and silently discarding whatever they had filtered to.
+let selectedVendor = null;
+let selectedActor = null;
+
 async function loadVendors() {
   const tags = await (await fetch('/api/tags?type=vendor&limit=30')).json();
   const chipsEl = document.getElementById('vendorChips');
   if (tags.length === 0) {
     chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No vendors detected in stored items yet.</div>`;
+    selectedVendor = null;
   } else {
     chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-vendor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
+        selectedVendor = chip.dataset.vendor;
         chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         const items = await fetchItems({ limit: 100, vendor: chip.dataset.vendor });
         renderFeedCards(document.getElementById('feedVendors'), items, { onBookmarkChange: loadVendors });
       };
     });
-    chipsEl.querySelector('.tag-chip').click();
+    // Restore the previously selected chip if it still exists in this
+    // refreshed list; only fall back to the first chip if there was no
+    // prior selection, or the previously selected vendor has disappeared.
+    const toSelect = (selectedVendor && chipsEl.querySelector(`.tag-chip[data-vendor="${CSS.escape(selectedVendor)}"]`))
+      || chipsEl.querySelector('.tag-chip');
+    toSelect.click();
   }
   if (tags.length === 0) document.getElementById('feedVendors').innerHTML = '';
 }
@@ -237,17 +455,22 @@ async function loadThreatActors() {
   const chipsEl = document.getElementById('actorChips');
   if (tags.length === 0) {
     chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No threat actors detected in stored items yet.</div>`;
+    selectedActor = null;
   } else {
     chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-actor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
+        selectedActor = chip.dataset.actor;
         chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
         chip.classList.add('active');
         const items = await fetchItems({ limit: 100, actor: chip.dataset.actor });
         renderFeedCards(document.getElementById('feedActors'), items, { onBookmarkChange: loadThreatActors });
       };
     });
-    chipsEl.querySelector('.tag-chip').click();
+    // Same restore-over-reset behavior as loadVendors() above.
+    const toSelect = (selectedActor && chipsEl.querySelector(`.tag-chip[data-actor="${CSS.escape(selectedActor)}"]`))
+      || chipsEl.querySelector('.tag-chip');
+    toSelect.click();
   }
   if (tags.length === 0) document.getElementById('feedActors').innerHTML = '';
 }
@@ -270,18 +493,30 @@ let iocMaxCount = 1;
 // so an auto-refresh of this view — a WebSocket new_items broadcast or the
 // 30s poll in init() — can restore it instead of always closing it.
 let iocDrilldown = null;
+// The calendar's currently displayed month, and the currently selected
+// day (if any, 'YYYY-MM-DD'). A selected day scopes the top chart, the
+// type-distribution donut, and the article list to just that date —
+// independent of iocDrilldown above, so clicking a specific IOC value
+// after selecting a day shows that value's occurrences on that day only.
+const _today = new Date();
+let iocCalYear = _today.getFullYear();
+let iocCalMonth = _today.getMonth() + 1;
+let iocSelectedDate = null;
 
 async function loadIOCsView(page = iocCurrentPage) {
   iocCurrentPage = page;
   document.querySelectorAll('.ioc-type-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.iocType === currentIocType);
   });
-  document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned`;
+  const dateSuffix = iocSelectedDate ? ` on ${new Date(iocSelectedDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}` : '';
+  document.getElementById('iocChartTitle').textContent = `Top ${IOC_TYPE_LABELS[currentIocType]} mentioned${dateSuffix}`;
+  document.getElementById('iocClearDateBtn').style.display = iocSelectedDate ? '' : 'none';
 
+  const dateParams = iocSelectedDate ? `&date_from=${iocSelectedDate}&date_to=${iocSelectedDate}` : '';
   const offset = (iocCurrentPage - 1) * IOC_PAGE_SIZE;
   const [top, summary] = await Promise.all([
-    fetch(`/api/iocs?type=${currentIocType}&limit=${IOC_PAGE_SIZE}&offset=${offset}`).then(r => r.json()),
-    fetch('/api/iocs/summary').then(r => r.json()),
+    fetch(`/api/iocs?type=${currentIocType}&limit=${IOC_PAGE_SIZE}&offset=${offset}${dateParams}`).then(r => r.json()),
+    fetch(`/api/iocs/summary?${iocSelectedDate ? `date_from=${iocSelectedDate}&date_to=${iocSelectedDate}` : ''}`).then(r => r.json()),
   ]);
 
   if (iocCurrentPage === 1) iocMaxCount = top.length ? top[0].count : 1;
@@ -297,30 +532,124 @@ async function loadIOCsView(page = iocCurrentPage) {
     Object.entries(IOC_TYPE_LABELS).map(([type, label]) => ({
       label, count: summary[type] || 0, color: IOC_TYPE_COLORS[type],
     })),
-    { centerLabel: 'distinct IOCs' });
+    { centerLabel: iocSelectedDate ? 'IOCs that day' : 'distinct IOCs' });
+
+  await loadIocCalendar();
 
   // Restore an open drilldown across auto-refreshes rather than always
   // closing it — but only for the IOC type currently being viewed; switching
   // type (below) is a genuine context change and should close it.
   if (iocDrilldown && iocDrilldown.type === currentIocType) {
     await showIocArticles(iocDrilldown.type, iocDrilldown.value, { scrollIntoView: false });
+  } else if (iocSelectedDate) {
+    await showIocDateArticles(iocSelectedDate, { scrollIntoView: false });
   } else {
     iocDrilldown = null;
     document.getElementById('iocArticlesPanel').style.display = 'none';
   }
 }
 
+// Guards loadIocCalendar against out-of-order responses: if navigation
+// fires two overlapping requests (e.g. someone double-clicks "next
+// month", or a slow network reorders responses), only the response that
+// matches the *current* token actually renders — an older, slower
+// response arriving after a newer one is simply discarded rather than
+// overwriting the screen with stale data.
+let _iocCalendarRequestToken = 0;
+
+async function loadIocCalendar() {
+  const myToken = ++_iocCalendarRequestToken;
+  const monthStr = String(iocCalMonth).padStart(2, '0');
+  const daysInMonth = new Date(iocCalYear, iocCalMonth, 0).getDate();
+  const from = `${iocCalYear}-${monthStr}-01`;
+  const to = `${iocCalYear}-${monthStr}-${String(daysInMonth).padStart(2, '0')}`;
+
+  const [rows, range] = await Promise.all([
+    fetch(`/api/iocs/calendar?type=${currentIocType}&date_from=${from}&date_to=${to}`).then(r => r.json()),
+    fetch('/api/items/range').then(r => r.json()),
+  ]);
+
+  if (myToken !== _iocCalendarRequestToken) return; // superseded by a newer request — discard
+
+  const counts = {};
+  rows.forEach(r => { counts[r.date] = r.count; });
+
+  // Bounds navigation to years the database could plausibly have data
+  // for, so "jump to year" can't wander off into meaningless empty years.
+  // Always includes the current year even if there's no data yet (a
+  // brand-new install with zero items shouldn't have a calendar that
+  // can't even reach today), and always includes the latest item's year
+  // even if that's in the future relative to "now" on this machine.
+  const nowYear = new Date().getFullYear();
+  const minYear = range.earliest ? Math.min(new Date(range.earliest * 1000).getFullYear(), nowYear) : nowYear;
+  const maxYear = range.latest ? Math.max(new Date(range.latest * 1000).getFullYear(), nowYear) : nowYear;
+
+  renderCalendarHeatmap(document.getElementById('iocCalendar'), {
+    year: iocCalYear, month: iocCalMonth, counts,
+    color: IOC_TYPE_COLORS[currentIocType],
+    selected: iocSelectedDate,
+    itemLabel: IOC_TYPE_LABELS[currentIocType].toLowerCase(),
+    minYear, maxYear,
+    onSelectDay: (dateStr) => {
+      // Clicking the already-selected day again clears the filter, same
+      // toggle pattern as re-clicking an active filter chip elsewhere in
+      // the app.
+      iocSelectedDate = iocSelectedDate === dateStr ? null : dateStr;
+      iocDrilldown = null;
+      iocCurrentPage = 1;
+      loadIOCsView();
+    },
+    onNavigate: (year, month) => {
+      // Re-validated here too, not just trusted from the widget — this
+      // function is the actual boundary that builds an API query string
+      // from year/month, so it's the one place that must never accept a
+      // bad value regardless of what UI layer called it.
+      year = parseInt(year, 10);
+      month = parseInt(month, 10);
+      if (!Number.isInteger(year) || !Number.isInteger(month)) return;
+      iocCalYear = Math.min(maxYear, Math.max(minYear, year));
+      iocCalMonth = Math.min(12, Math.max(1, month));
+      loadIocCalendar();
+    },
+  });
+}
+
 document.querySelectorAll('.ioc-type-btn').forEach(btn => {
-  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; iocCurrentPage = 1; loadIOCsView(); };
+  btn.onclick = () => { currentIocType = btn.dataset.iocType; iocDrilldown = null; iocSelectedDate = null; iocCurrentPage = 1; loadIOCsView(); };
 });
+
+document.getElementById('iocClearDateBtn').onclick = () => {
+  iocSelectedDate = null;
+  iocDrilldown = null;
+  iocCurrentPage = 1;
+  loadIOCsView();
+};
 
 async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
   iocDrilldown = { type: iocType, value };
-  const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50 });
+  const dateFilter = iocSelectedDate ? { date_from: iocSelectedDate, date_to: iocSelectedDate } : {};
+  const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50, ...dateFilter });
+  const dateSuffix = iocSelectedDate ? ` on ${iocSelectedDate}` : '';
+  renderIocArticles(
+    `Articles containing ${IOC_TYPE_LABELS[iocType].replace(/s$/, '')}: ${value}${dateSuffix} (${items.length} occurrence${items.length === 1 ? '' : 's'})`,
+    items, scrollIntoView,
+  );
+}
+
+async function showIocDateArticles(dateStr, { scrollIntoView = true } = {}) {
+  iocDrilldown = null;
+  const items = await fetchItems({ ioc_type: currentIocType, date_from: dateStr, date_to: dateStr, limit: 100 });
+  const label = new Date(dateStr + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+  renderIocArticles(
+    `Articles with ${IOC_TYPE_LABELS[currentIocType]} on ${label} (${items.length})`,
+    items, scrollIntoView,
+  );
+}
+
+function renderIocArticles(title, items, scrollIntoView) {
   const panel = document.getElementById('iocArticlesPanel');
   const tbody = document.getElementById('iocArticlesBody');
-  document.getElementById('iocArticlesTitle').textContent =
-    `Articles containing ${IOC_TYPE_LABELS[iocType].replace(/s$/, '')}: ${value} (${items.length} occurrence${items.length === 1 ? '' : 's'})`;
+  document.getElementById('iocArticlesTitle').textContent = title;
 
   tbody.innerHTML = items.length === 0
     ? `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:24px;">No articles found.</td></tr>`
@@ -329,7 +658,7 @@ async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
           <td><span class="src-tag" style="background:${i.source_color}22; color:${i.source_color}">${escapeHtml(i.source_name)}</span></td>
           <td>${escapeHtml(i.title)}</td>
           <td style="color:var(--text-faint); white-space:nowrap;">${new Date(i.fetched_at * 1000).toLocaleString()}</td>
-          <td style="text-align:right;"><a class="icon-btn" href="${i.link}" target="_blank" rel="noopener" title="Open original">&#8599;</a></td>
+          <td style="text-align:right;"><a class="icon-btn" href="${safeHref(i.link)}" target="_blank" rel="noopener" title="Open original">&#8599;</a></td>
         </tr>
       `).join('');
 
@@ -355,7 +684,11 @@ async function loadAnalytics() {
 // -------------------------------------------------------------- settings
 
 async function loadSettingsView() {
-  const settings = await (await fetch('/api/settings')).json();
+  if (!(await ensureSettingsUnlocked(loadSettingsView))) return;
+
+  const settingsRes = await fetch('/api/settings');
+  if (settingsRes.status === 401) { setSettingsToken(null); showAuthGate('login', loadSettingsView); return; }
+  const settings = await settingsRes.json();
   document.getElementById('retentionSelect').value = String(settings.retention_days);
   document.getElementById('deepExtractionToggle').classList.toggle('on', settings.deep_extraction);
 
@@ -373,7 +706,18 @@ async function loadSettingsView() {
 }
 
 async function loadWebhooksTable() {
-  const webhooks = await (await fetch('/api/webhooks')).json();
+  const res = await fetch('/api/webhooks');
+  if (res.status === 401) {
+    // Session expired while already on the Settings page (e.g. the
+    // 1-hour session ran out, or another tab logged out). Falling back
+    // to the lock screen here — rather than leaving the page half-
+    // rendered with a broken webhooks section — matches how
+    // loadSettingsView() itself already handles this for /api/settings.
+    setSettingsToken(null);
+    showAuthGate('login', loadSettingsView);
+    return;
+  }
+  const webhooks = await res.json();
   const tbody = document.getElementById('webhooksTableBody');
   if (webhooks.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-faint); padding:20px;">No webhooks configured.</td></tr>`;
@@ -391,7 +735,7 @@ async function loadWebhooksTable() {
     const statusOk = w.last_status && w.last_status.startsWith('ok');
     return `
       <tr>
-        <td>${w.protected ? '🔒 ' : ''}${escapeHtml(w.name)}</td>
+        <td>${w.protected ? '🔒 ' : ''}${escapeHtml(w.name)}${w.allow_insecure_tls ? ' <span title="TLS certificate verification disabled for this webhook" style="color:var(--text-faint); font-size:10.5px;">(insecure TLS)</span>' : ''}</td>
         <td style="color:var(--text-dim); font-size:11.5px;">${escapeHtml(trigger)}</td>
         <td>
           <span class="status-badge status-${w.last_status === 'pending' ? 'pending' : (statusOk ? 'ok' : 'error')}"></span>
@@ -481,31 +825,59 @@ async function unlockProtectedWebhook(webhook) {
 }
 
 document.getElementById('retentionSelect').addEventListener('change', async (e) => {
-  await fetch('/api/settings', {
+  const res = await fetch('/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ retention_days: e.target.value }),
   });
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', loadSettingsView); }
 });
 
 document.getElementById('deepExtractionToggle').onclick = async function () {
   const enabling = !this.classList.contains('on');
   this.classList.toggle('on', enabling);
-  await fetch('/api/settings', {
+  const res = await fetch('/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ deep_extraction: enabling ? '1' : '0' }),
   });
+  if (res.status === 401) {
+    this.classList.toggle('on', !enabling); // revert the optimistic UI change — it didn't actually save
+    setSettingsToken(null);
+    showAuthGate('login', loadSettingsView);
+  }
 };
 
 // -------------------------------------------------------------- sources view
 
 async function loadSources() {
   const res = await fetch('/api/sources');
+  if (!res.ok) {
+    // Expected whenever Settings/Sources is locked (including on every
+    // fresh page load before authenticating) — must not throw here.
+    // sources must stay a real array, since other code throughout the
+    // app calls .filter()/.find() on it; leaving it as a parsed error
+    // object ({detail: "..."}) would crash the FIRST such call, and
+    // this function runs unconditionally during boot (see init()),
+    // before the WebSocket connects — an uncaught exception here was
+    // silently killing the rest of the boot sequence, including
+    // connectWs(), which is why notifications appeared broken (they
+    // fire from the WS message handler, which never got reached).
+    sources = [];
+    const statEl = document.getElementById('statSources');
+    if (statEl) statEl.textContent = '—';
+    return;
+  }
   sources = await res.json();
   document.getElementById('statSources').textContent = sources.filter(s => s.enabled).length;
 }
 
 async function loadSourcesView() {
-  await loadSources();
+  if (!(await ensureSettingsUnlocked(loadSourcesView))) return;
+
+  const sourcesRes = await fetch('/api/sources');
+  if (sourcesRes.status === 401) { setSettingsToken(null); showAuthGate('login', loadSourcesView); return; }
+  sources = await sourcesRes.json();
+  document.getElementById('statSources').textContent = sources.filter(s => s.enabled).length;
+
   const tbody = document.getElementById('sourcesTableBody');
   if (sources.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-faint); padding:30px;">No sources yet. Click <b>+ Add Source</b> to get started.</td></tr>`;
@@ -555,7 +927,9 @@ async function loadSourcesView() {
 document.getElementById('exportSourcesBtn').onclick = downloadSourcesExport;
 document.getElementById('settingsExportBtn').onclick = downloadSourcesExport;
 async function downloadSourcesExport() {
-  const data = await (await fetch('/api/sources/export')).json();
+  const res = await fetch('/api/sources/export');
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', () => {}); return; }
+  const data = await res.json();
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -602,7 +976,86 @@ document.getElementById('refreshAllBtn').onclick = async () => {
   btn.textContent = original;
 };
 
-document.getElementById('backupBtn').onclick = () => { window.location.href = '/api/backup'; };
+document.getElementById('backupBtn').onclick = async () => {
+  // A raw `window.location.href = url` navigation does NOT go through
+  // the fetch() wrapper that attaches X-Settings-Token (it only
+  // intercepts calls made via fetch(), not full page navigations) — so
+  // this endpoint, being protected, would 401 even for a properly
+  // logged-in user, and the browser would navigate away from the app
+  // entirely to display the raw error JSON. Fetching as a blob and
+  // triggering the download via an anchor element keeps everything
+  // properly authenticated and keeps the user on the actual app page.
+  const res = await fetch('/api/backup');
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', () => {}); return; }
+  if (!res.ok) { alert('Backup download failed: ' + res.status); return; }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pantomath-backup.db';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+document.getElementById('restoreBtn').onclick = () => { document.getElementById('restoreFileInput').click(); };
+
+document.getElementById('restoreFileInput').onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // reset so picking the exact same file again still fires 'change'
+  if (!file) return;
+
+  const resultEl = document.getElementById('restoreResult');
+  // This is one of the few genuinely destructive actions in the app —
+  // the confirmation names the actual file so a misclick on the wrong
+  // backup is caught before anything happens, not after.
+  if (!confirm(
+    `Restore the database from "${file.name}"?\n\nThis REPLACES all current items, sources, settings, and webhooks. ` +
+    `A safety copy of what's currently live will be made automatically first, but this still isn't reversible from ` +
+    `inside the app — you'd need that safety-backup file to undo it.`
+  )) {
+    return;
+  }
+
+  resultEl.textContent = 'Uploading and validating…';
+  resultEl.style.color = 'var(--text-faint)';
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/restore', { method: 'POST', body: formData });
+    // Read as text first and parse manually — a raw fetch failure this app
+    // doesn't control (e.g. a reverse proxy like nginx rejecting the
+    // upload before it ever reaches the app, returning its own HTML error
+    // page for a 413/502/etc.) is not JSON, and calling res.json()
+    // directly throws an opaque "Unexpected token '<'..." SyntaxError that
+    // buries the actual problem. Handle that case with an explicit,
+    // legible message instead.
+    const raw = await res.text();
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      const hint = res.status === 413
+        ? ' — the upload was likely rejected by a reverse proxy (e.g. nginx) before reaching Pantomath. ' +
+          'If you set up HTTPS via `pantomath-admin setup-https`, re-run it with -y to pick up the raised ' +
+          'upload-size limit, then try again.'
+        : '';
+      resultEl.textContent = `Restore failed: server returned an unexpected non-JSON response (HTTP ${res.status})${hint}`;
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    if (!res.ok) {
+      resultEl.textContent = `Restore failed: ${body.detail || 'unknown error'}`;
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    resultEl.textContent = `Restored successfully. Previous data was saved to: ${body.safety_backup || '(no prior database existed)'}. Reloading…`;
+    resultEl.style.color = 'var(--signal)';
+    setTimeout(() => window.location.reload(), 2500);
+  } catch (err) {
+    resultEl.textContent = `Restore failed: ${err.message}`;
+    resultEl.style.color = 'var(--red)';
+  }
+};
 
 document.getElementById('reprocessBtn').onclick = async () => {
   const btn = document.getElementById('reprocessBtn');
@@ -713,6 +1166,7 @@ function openWebhookModal(webhook, verifiedKey = null) {
   document.getElementById('whKeyword').value = webhook ? webhook.keyword : '';
   document.getElementById('whSource').value = webhook ? webhook.source_id : '';
   document.getElementById('whMinSeverity').value = webhook ? webhook.min_severity : '';
+  document.getElementById('whInsecureTls').checked = webhook ? !!webhook.allow_insecure_tls : false;
   whProtectCheckbox.checked = webhook ? !!webhook.protected : false;
   whKeyInput.value = '';
   whKeyInput.placeholder = (webhook && webhook.protected) ? 'Leave blank to keep the current key' : 'Enter a key';
@@ -734,12 +1188,13 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
   const keyword = document.getElementById('whKeyword').value.trim();
   const source_id = document.getElementById('whSource').value;
   const min_severity = document.getElementById('whMinSeverity').value;
+  const allow_insecure_tls = document.getElementById('whInsecureTls').checked;
   const wantsProtection = whProtectCheckbox.checked;
   const keyInput = whKeyInput.value;
   if (!name || !url) { alert('Name and webhook URL are required'); return; }
 
   const isEditing = !!editingWebhookId;
-  const body = { name, url, keyword, source_id, min_severity };
+  const body = { name, url, keyword, source_id, min_severity, allow_insecure_tls };
   if (!isEditing) body.enabled = true;
 
   if (wantsProtection) {
@@ -765,6 +1220,7 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
     document.getElementById('whKeyword').value = '';
     document.getElementById('whSource').value = '';
     document.getElementById('whMinSeverity').value = '';
+    document.getElementById('whInsecureTls').checked = false;
     whProtectCheckbox.checked = false;
     whKeyInput.value = '';
     whKeyField.style.display = 'none';
@@ -810,7 +1266,7 @@ function connectWs() {
 (async function init() {
   initThemeControls();
   await initNotificationControls();
-  await loadSources();
+  try { await loadSources(); } catch (e) { console.warn('loadSources() failed during boot — continuing anyway:', e); }
   const initial = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard';
   navigateTo(initial);
   connectWs();

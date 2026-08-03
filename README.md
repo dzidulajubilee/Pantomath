@@ -9,6 +9,12 @@ exactly what you configure.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's structured internally.
 
+
+## Requirement
+
+apt install python3-venv
+apt install nginx
+
 ## Install
 
 ```bash
@@ -30,13 +36,7 @@ Open **http://localhost:7373**. The source list is empty — click **+ Add
 Source**, paste an RSS/Atom URL, and it starts polling immediately. Leave
 the icon field blank and Pantomath fetches the site's favicon for you.
 
-## Fully local, no CDN dependencies
 
-Fonts and sidebar icons are bundled in the repo (`frontend/assets/`), not
-loaded from Google Fonts or an icon CDN — works fully offline, and
-doesn't leak page-load telemetry to a third party. See
-`docs/ARCHITECTURE.md` for licensing details (both OFL/ISC, license
-files included alongside the assets).
 
 ## Configuration
 

@@ -12,8 +12,11 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's structured inter
 
 ## Requirement
 
+```bash
 apt install python3-venv
+
 apt install nginx
+```
 
 ## Install
 

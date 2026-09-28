@@ -631,8 +631,12 @@ def _comma_column_counts_query(column: str, extra_where: str = "") -> str:
 def _ioc_detail_query(column: str, extra_where: str = "", tag_filter: str = "") -> str:
     """
     Like _comma_column_counts_query, but carries each item's severity,
-    fetch time and source through the split, so every distinct value
-    also gets: number of sources, worst severity, first and last seen.
+    fetch time and source through the split, so every distinct value also
+    gets: number of sources, worst severity, first and last seen.
+
+    Mentions, sources and severity respect `extra_where` (a selected day);
+    first/last seen never do: "first seen" means the first time Pantomath
+    ever saw the value, not the first time on the selected day.
     """
     where = f"{column} != ''" + (f" AND {extra_where}" if extra_where else "")
     return f"""
@@ -644,12 +648,25 @@ def _ioc_detail_query(column: str, extra_where: str = "", tag_filter: str = "") 
             UNION ALL
             SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1),
                    severity, fetched_at, source_id FROM split WHERE rest != ''
+          ),
+          ranged AS (
+            SELECT tag AS name, COUNT(*) AS count, COUNT(DISTINCT source_id) AS sources,
+                   MAX(CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) AS severity_rank
+            FROM split WHERE tag != ''{tag_filter} GROUP BY tag
+          ),
+          all_base AS (SELECT {column} || ',' AS rest, fetched_at FROM items WHERE {column} != ''),
+          all_split(tag, rest, fetched_at) AS (
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1), fetched_at FROM all_base
+            UNION ALL
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1), fetched_at
+            FROM all_split WHERE rest != ''
+          ),
+          seen AS (
+            SELECT tag, MIN(fetched_at) AS first_seen, MAX(fetched_at) AS last_seen
+            FROM all_split WHERE tag != '' GROUP BY tag
           )
-        SELECT tag AS name, COUNT(*) AS count, COUNT(DISTINCT source_id) AS sources,
-               MAX(CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) AS severity_rank,
-               MIN(fetched_at) AS first_seen, MAX(fetched_at) AS last_seen
-        FROM split WHERE tag != ''{tag_filter}
-        GROUP BY tag
+        SELECT ranged.name, ranged.count, ranged.sources, ranged.severity_rank, seen.first_seen, seen.last_seen
+        FROM ranged JOIN seen ON seen.tag = ranged.name
     """
 
 
@@ -743,10 +760,10 @@ async def iocs_summary(date_from: str | None = None, date_to: str | None = None)
 @router.get("/api/iocs/calendar")
 async def iocs_calendar(type: str = "cve", date_from: str | None = None, date_to: str | None = None):
     """
-    Per-day counts of items containing at least one IOC of the given
-    type, for the IOCs page's calendar heatmap — 'how many articles with
-    a CVE landed on July 14th' rather than 'how many times was CVE-X
-    mentioned' (that's what /api/iocs already answers per-value).
+    Per-day counts for the Indicators page's calendar: how many distinct
+    indicators of the given type were seen that day (`count`, matching the
+    table for that day) and in how many items (`articles`). Until 0.6.1
+    `count` was the number of items, which never matched the table.
 
     date_from/date_to (both 'YYYY-MM-DD', inclusive) scope it to the
     currently-displayed month rather than the item's entire history —
@@ -754,7 +771,7 @@ async def iocs_calendar(type: str = "cve", date_from: str | None = None, date_to
     would return one row per day since install, most of them irrelevant
     to whatever month the user is currently looking at.
 
-    Returns a plain list — [{"date": "2026-07-14", "count": 3}, ...] —
+    Returns a plain list — [{"date": "2026-07-14", "count": 3, "articles": 2}, ...] —
     computed entirely in SQL (a single GROUP BY), not by loading rows
     into Python and bucketing them there.
     """
@@ -763,9 +780,23 @@ async def iocs_calendar(type: str = "cve", date_from: str | None = None, date_to
         raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
     date_where, date_params = _date_range_where(date_from, date_to)
     where = f"{col} != ''" + (f" AND {date_where}" if date_where else "")
+    # `count` is the number of distinct indicators of this type seen that
+    # day: the same unit as the Indicators table and /api/iocs/summary for
+    # that day, so the calendar and the list next to it always agree.
+    # `articles` is how many items they appeared in (for the tooltip).
     query = f"""
-        SELECT strftime('%Y-%m-%d', fetched_at, 'unixepoch', 'localtime') AS date, COUNT(*) AS count
-        FROM items WHERE {where} GROUP BY date ORDER BY date
+        WITH RECURSIVE
+          base AS (SELECT id, {col} || ',' AS rest,
+                          strftime('%Y-%m-%d', fetched_at, 'unixepoch', 'localtime') AS date
+                   FROM items WHERE {where}),
+          split(id, date, tag, rest) AS (
+            SELECT id, date, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1) FROM base
+            UNION ALL
+            SELECT id, date, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
+            FROM split WHERE rest != ''
+          )
+        SELECT date, COUNT(DISTINCT tag) AS count, COUNT(DISTINCT id) AS articles
+        FROM split WHERE tag != '' GROUP BY date ORDER BY date
     """
     db = await get_db()
     cur = await db.execute(query, date_params)

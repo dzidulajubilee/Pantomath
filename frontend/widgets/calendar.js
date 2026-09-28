@@ -89,7 +89,7 @@ function renderCalendarHeatmap(containerEl, opts) {
       <div class="cal-day ${count > 0 ? 'has-data' : ''} ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}"
            data-date="${dateStr}"
            style="background:${bg};"
-           title="${dateStr}: ${count} item${count === 1 ? '' : 's'} with ${opts.itemLabel || 'IOCs'}">
+           title="${opts.titleFn ? opts.titleFn(dateStr, count) : `${dateStr}: ${count} item${count === 1 ? '' : 's'} with ${opts.itemLabel || 'IOCs'}`}">
         <span class="cal-day-num">${d}</span>
         ${count > 0 ? `<span class="cal-day-count">${count}</span>` : ''}
       </div>`;

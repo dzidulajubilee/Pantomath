@@ -160,3 +160,43 @@ def test_analytics_heatmap_is_weekday_by_hour():
 def test_analytics_days_is_clamped():
     assert client.get("/api/analytics?days=0").json()["days"] == 1
     assert client.get("/api/analytics?days=9999").json()["days"] == 365
+
+
+# ------------------------------------------------ calendar agrees with the table
+
+async def test_calendar_counts_distinct_indicators_like_the_table_and_summary():
+    # Two items seen today: a = CVE-2099-1 + CVE-2099-2, b = CVE-2099-1.
+    # Two distinct CVEs in two articles. Before 0.6.1 the calendar said
+    # "2 items" while the table listed 2 CVEs only by coincidence; with
+    # a third item repeating CVE-2099-1 the two would drift apart.
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO items (id, source_id, guid, title, link, summary, published, fetched_at, severity, cves)
+           VALUES ('d', 's2', 'd', 't-d', 'http://x.test/i/d', '', ?, ?, 'low', 'CVE-2099-1')""",
+        (time.time() - HOUR, time.time() - HOUR),
+    )
+    await db.commit()
+    await db.close()
+    day = time.strftime("%Y-%m-%d", time.localtime(time.time() - HOUR))
+    cal = client.get(f"/api/iocs/calendar?type=cve&date_from={day}&date_to={day}").json()
+    table = client.get(f"/api/iocs?type=cve&detail=1&date_from={day}&date_to={day}").json()
+    summary = client.get(f"/api/iocs/summary?date_from={day}&date_to={day}").json()
+    assert cal == [{"date": day, "count": 2, "articles": 3}]
+    assert cal[0]["count"] == len(table) == summary["cve"]
+
+
+async def test_first_seen_is_all_time_even_when_a_day_is_selected():
+    old = time.time() - 5 * 86400
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO items (id, source_id, guid, title, link, summary, published, fetched_at, severity, cves)
+           VALUES ('old', 's1', 'old', 't-old', 'http://x.test/i/old', '', ?, ?, 'low', 'CVE-2099-1')""",
+        (old, old),
+    )
+    await db.commit()
+    await db.close()
+    day = time.strftime("%Y-%m-%d", time.localtime(time.time() - HOUR))
+    row = next(r for r in client.get(f"/api/iocs?type=cve&detail=1&date_from={day}&date_to={day}").json()
+               if r["name"] == "CVE-2099-1")
+    assert row["count"] == 2                       # mentions: only the selected day
+    assert abs(row["first_seen"] - old) < 1        # first seen: all time

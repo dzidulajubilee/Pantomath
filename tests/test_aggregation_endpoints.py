@@ -211,13 +211,13 @@ async def test_iocs_calendar_buckets_counts_by_day_and_respects_range():
     resp = client.get("/api/iocs/calendar?type=cve")
     assert resp.status_code == 200
     assert resp.json() == [
-        {"date": "2026-07-01", "count": 2},
-        {"date": "2026-07-02", "count": 1},
+        {"date": "2026-07-01", "count": 2, "articles": 2},
+        {"date": "2026-07-02", "count": 1, "articles": 1},
     ]
 
     # Range-bounded to just the 1st should exclude the 2nd entirely.
     resp = client.get("/api/iocs/calendar?type=cve&date_from=2026-07-01&date_to=2026-07-01")
-    assert resp.json() == [{"date": "2026-07-01", "count": 2}]
+    assert resp.json() == [{"date": "2026-07-01", "count": 2, "articles": 2}]
 
 
 async def test_stats_top_vendors_and_articles_by_day_reflect_seeded_items():

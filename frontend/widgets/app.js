@@ -235,18 +235,14 @@ const VIEWS = [
 const VIEW_LOADERS = {
   'dashboard': loadDashboard,
   'live-feed': loadLiveFeed,
-  'critical': () => loadSimpleFeed('feedCritical', { severity: 'high' }, 'No critical items right now.'),
-  'vulnerabilities': () => loadMergedFeed('feedVulnerabilities',
-    { category: 'vulnerability' }, { has_cve: true },
-    'No vulnerability-tagged sources have posted, and no CVEs have been detected in any stored article yet.'),
-  'malware': () => loadMergedFeed('feedMalware',
-    { category: 'malware' }, { has_actor: true },
-    'No malware-tagged sources have posted, and no threat actors have been detected in any stored article yet.'),
-  'ransomware': () => loadSimpleFeed('feedRansomware', { keyword: 'ransomware' }, 'No ransomware-related items yet.'),
+  'critical': () => loadFeedPage('critical'),
+  'vulnerabilities': () => loadFeedPage('vulnerabilities'),
+  'malware': () => loadFeedPage('malware'),
+  'ransomware': () => loadFeedPage('ransomware'),
   'threat-actors': loadThreatActors,
   'vendors': loadVendors,
   'iocs': loadIOCsView,
-  'saved': () => loadSimpleFeed('feedSaved', { bookmarked_only: true }, 'Nothing saved yet — click the star on any item to bookmark it.'),
+  'saved': () => loadFeedPage('saved'),
   'sources': loadSourcesView,
   'analytics': loadAnalytics,
   'settings': loadSettingsView,
@@ -446,11 +442,11 @@ async function loadLiveFeed(page = liveCurrentPage) {
     fetchItems({ ...filterParams, limit: LIVE_PAGE_SIZE, offset }),
     fetch('/api/items/count?' + new URLSearchParams(filterParams)).then(r => r.json()),
   ]);
-  liveItems = items;
+  livePanel.items = items;
   liveTotal = countResult.total;
-  renderLiveRows();
-  const selected = liveItems.find(i => i.id === liveSelectedId);
-  if (selected) renderLiveDetail(selected);
+  renderFeedRows(livePanel);
+  const selected = livePanel.items.find(i => i.id === livePanel.selectedId);
+  if (selected) renderFeedDetail(livePanel, selected);
 
   const totalPages = Math.max(1, Math.ceil(countResult.total / LIVE_PAGE_SIZE));
   renderPagination(document.getElementById('liveFeedPagination'), liveCurrentPage, totalPages, (p) => loadLiveFeed(p));
@@ -499,34 +495,6 @@ document.getElementById('dateClearBtn').onclick = () => {
 
 // ---------------------------------------------------- simple filtered feeds
 
-async function loadSimpleFeed(containerId, params, emptyHint) {
-  const items = await fetchItems({ limit: 100, ...params });
-  renderFeedCards(document.getElementById(containerId), items, {
-    emptyTitle: 'Nothing here yet', emptyHint, onBookmarkChange: () => VIEW_LOADERS[currentView()]?.(),
-  });
-}
-
-/**
- * Fetches two filter conditions separately and merges the results
- * (dedup by id, re-sorted newest-first) — an OR across two dimensions
- * the backend's query builder only ANDs within a single request. Used
- * for "Vulnerabilities": a source manually tagged as a vulnerability
- * feed is one signal, but an article actually containing an extracted
- * CVE is a more reliable one regardless of how its source was
- * categorized — this shows either.
- */
-async function loadMergedFeed(containerId, paramsA, paramsB, emptyHint) {
-  const [itemsA, itemsB] = await Promise.all([
-    fetchItems({ limit: 100, ...paramsA }),
-    fetchItems({ limit: 100, ...paramsB }),
-  ]);
-  const merged = new Map();
-  for (const item of [...itemsA, ...itemsB]) merged.set(item.id, item);
-  const combined = [...merged.values()].sort((a, b) => b.fetched_at - a.fetched_at);
-  renderFeedCards(document.getElementById(containerId), combined, {
-    emptyTitle: 'Nothing here yet', emptyHint, onBookmarkChange: () => VIEW_LOADERS[currentView()]?.(),
-  });
-}
 function currentView() {
   return VIEWS.find(v => document.getElementById('view-' + v).classList.contains('active'));
 }
@@ -543,20 +511,22 @@ let selectedVendor = null;
 let selectedActor = null;
 
 async function loadVendors() {
-  const tags = await (await fetch('/api/tags?type=vendor&limit=30')).json();
+  const tags = await (await fetch('/api/tags?type=vendor&limit=60')).json();
   const chipsEl = document.getElementById('vendorChips');
+  document.getElementById('vendorCount').textContent = tags.length ? `${tags.length} most mentioned` : '';
   if (tags.length === 0) {
-    chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No vendors detected in stored items yet.</div>`;
+    chipsEl.innerHTML = '<p class="muted">No vendors found in stored items yet.</p>';
     selectedVendor = null;
   } else {
-    chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-vendor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
+    chipsEl.innerHTML = tags.map(t => `<button type="button" class="tag-chip" data-vendor="${escapeAttr(t.name)}" data-count="${t.count}" aria-pressed="false"><span>${escapeHtml(t.name)}</span><span class="count">${t.count}</span></button>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
         selectedVendor = chip.dataset.vendor;
-        chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
+        chipsEl.querySelectorAll('.tag-chip').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
         chip.classList.add('active');
-        const items = await fetchItems({ limit: 100, vendor: chip.dataset.vendor });
-        renderFeedCards(document.getElementById('feedVendors'), items, { onBookmarkChange: loadVendors });
+        chip.setAttribute('aria-pressed', 'true');
+        const items = await fetchItems({ limit: FEED_PAGE_LIMIT, vendor: chip.dataset.vendor });
+        showTagItems('vendors', chip.dataset.vendor, Number(chip.dataset.count), items);
       };
     });
     // Restore the previously selected chip if it still exists in this
@@ -565,33 +535,37 @@ async function loadVendors() {
     const toSelect = (selectedVendor && chipsEl.querySelector(`.tag-chip[data-vendor="${CSS.escape(selectedVendor)}"]`))
       || chipsEl.querySelector('.tag-chip');
     toSelect.click();
+    document.getElementById('vendorFilter').dispatchEvent(new Event('input'));
   }
-  if (tags.length === 0) document.getElementById('feedVendors').innerHTML = '';
+  if (tags.length === 0) showTagItems('vendors', null, 0, []);
 }
 
 async function loadThreatActors() {
-  const tags = await (await fetch('/api/tags?type=actor&limit=30')).json();
+  const tags = await (await fetch('/api/tags?type=actor&limit=60')).json();
   const chipsEl = document.getElementById('actorChips');
+  document.getElementById('actorCount').textContent = tags.length ? `${tags.length} most mentioned` : '';
   if (tags.length === 0) {
-    chipsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-faint);">No threat actors detected in stored items yet.</div>`;
+    chipsEl.innerHTML = '<p class="muted">No threat actors found in stored items yet.</p>';
     selectedActor = null;
   } else {
-    chipsEl.innerHTML = tags.map(t => `<span class="tag-chip" data-actor="${escapeHtml(t.name)}">${escapeHtml(t.name)} <span class="count">${t.count}</span></span>`).join('');
+    chipsEl.innerHTML = tags.map(t => `<button type="button" class="tag-chip" data-actor="${escapeAttr(t.name)}" data-count="${t.count}" aria-pressed="false"><span>${escapeHtml(t.name)}</span><span class="count">${t.count}</span></button>`).join('');
     chipsEl.querySelectorAll('.tag-chip').forEach(chip => {
       chip.onclick = async () => {
         selectedActor = chip.dataset.actor;
-        chipsEl.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
+        chipsEl.querySelectorAll('.tag-chip').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
         chip.classList.add('active');
-        const items = await fetchItems({ limit: 100, actor: chip.dataset.actor });
-        renderFeedCards(document.getElementById('feedActors'), items, { onBookmarkChange: loadThreatActors });
+        chip.setAttribute('aria-pressed', 'true');
+        const items = await fetchItems({ limit: FEED_PAGE_LIMIT, actor: chip.dataset.actor });
+        showTagItems('threat-actors', chip.dataset.actor, Number(chip.dataset.count), items);
       };
     });
     // Same restore-over-reset behavior as loadVendors() above.
     const toSelect = (selectedActor && chipsEl.querySelector(`.tag-chip[data-actor="${CSS.escape(selectedActor)}"]`))
       || chipsEl.querySelector('.tag-chip');
     toSelect.click();
+    document.getElementById('actorFilter').dispatchEvent(new Event('input'));
   }
-  if (tags.length === 0) document.getElementById('feedActors').innerHTML = '';
+  if (tags.length === 0) showTagItems('threat-actors', null, 0, []);
 }
 
 // -------------------------------------------------------------- IOCs
@@ -640,6 +614,7 @@ async function loadIOCsView(page = iocCurrentPage) {
   const dateSuffix = iocSelectedDate ? ` on ${new Date(iocSelectedDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}` : '';
   document.getElementById('iocChartTitle').textContent = `${IOC_TYPE_LABELS[currentIocType]}${dateSuffix}`;
   document.getElementById('iocClearDateBtn').style.display = iocSelectedDate ? '' : 'none';
+  document.getElementById('iocCalSub').textContent = `Distinct ${IOC_TYPE_LOWER[currentIocType]} seen each day`;
   document.getElementById('iocFilter').placeholder = `Filter ${IOC_TYPE_LOWER[currentIocType]}`;
 
   const dateParams = iocSelectedDate ? `&date_from=${iocSelectedDate}&date_to=${iocSelectedDate}` : '';
@@ -660,7 +635,7 @@ async function loadIOCsView(page = iocCurrentPage) {
   const total = summary[currentIocType] || 0;
   document.getElementById('iocTableSub').textContent = iocFilterText
     ? `${top.length}${top.length === IOC_FILTER_LIMIT ? '+' : ''} matching "${iocFilterText}"`
-    : `${total} distinct, most mentioned first`;
+    : `${total} distinct${iocSelectedDate ? ' seen that day' : ''}, most mentioned first`;
   const totalPages = iocFilterText ? 1 : Math.max(1, Math.ceil(total / IOC_PAGE_SIZE));
   renderPagination(document.getElementById('iocTopChartPagination'), iocCurrentPage, totalPages, (p) => loadIOCsView(p));
   updateIocActionBar();
@@ -703,7 +678,8 @@ async function loadIocCalendar() {
   if (myToken !== _iocCalendarRequestToken) return; // superseded by a newer request — discard
 
   const counts = {};
-  rows.forEach(r => { counts[r.date] = r.count; });
+  const articles = {};
+  rows.forEach(r => { counts[r.date] = r.count; articles[r.date] = r.articles; });
 
   // Bounds navigation to years the database could plausibly have data
   // for, so "jump to year" can't wander off into meaningless empty years.
@@ -717,6 +693,12 @@ async function loadIocCalendar() {
 
   renderCalendarHeatmap(document.getElementById('iocCalendar'), {
     year: iocCalYear, month: iocCalMonth, counts,
+    titleFn: (date, n) => {
+      const day = new Date(date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+      if (!n) return `${day}: no ${IOC_TYPE_LOWER[currentIocType]}`;
+      const inArticles = articles[date] || 0;
+      return `${day}: ${n} ${n === 1 ? IOC_SINGULAR[currentIocType] : IOC_TYPE_LOWER[currentIocType]} in ${inArticles} article${inArticles === 1 ? '' : 's'}`;
+    },
     color: IOC_TYPE_COLORS[currentIocType],
     selected: iocSelectedDate,
     itemLabel: IOC_TYPE_LOWER[currentIocType],
@@ -760,9 +742,10 @@ async function showIocArticles(iocType, value, { scrollIntoView = true } = {}) {
   iocDrilldown = { type: iocType, value };
   const dateFilter = iocSelectedDate ? { date_from: iocSelectedDate, date_to: iocSelectedDate } : {};
   const items = await fetchItems({ ioc_type: iocType, ioc_value: value, limit: 50, ...dateFilter });
-  const dateSuffix = iocSelectedDate ? ` on ${iocSelectedDate}` : '';
+  const dateSuffix = iocSelectedDate
+    ? ` on ${new Date(iocSelectedDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}` : '';
   renderIocArticles(
-    `Articles mentioning ${IOC_SINGULAR[iocType]} ${value}${dateSuffix} (${items.length})`,
+    `Articles mentioning ${iocType === 'cve' ? '' : IOC_SINGULAR[iocType] + ' '}${value}${dateSuffix} (${items.length})`,
     items, scrollIntoView, value,
   );
   document.querySelectorAll('#iocTopChart .ioc-row[data-value]').forEach(row => {
@@ -792,7 +775,7 @@ function renderIocArticles(title, items, scrollIntoView, focusValue = null) {
           <td><span class="sev-pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span></td>
           <td><a href="${safeHref(i.link)}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></td>
           <td style="color:var(--text-dim);">${escapeHtml(i.source_name)}</td>
-          <td style="color:var(--text-dim); white-space:nowrap;" title="${escapeAttr(timeTitle(i))}">${escapeHtml(fmtClock(effectiveTs(i)))}</td>
+          <td style="color:var(--text-dim); white-space:nowrap;" title="${escapeAttr(timeTitle(i))}">${escapeHtml(fmtClock(i.fetched_at))}</td>
         </tr>
       `).join('');
 
@@ -1638,23 +1621,36 @@ function unreadSince() {
   return Math.max(previousVisitEnded || (pageLoadedAt - 86400), mark);
 }
 
-// -------------------------------------------------------------- live feed (0.6.0)
+// -------------------------------------------------------------- feed lists (0.6.0; shared since 0.6.1)
+//
+// One list + detail panel, used by the Live feed and every other feed page
+// (High severity, Vulnerabilities, Malware, Ransomware, Saved, Vendors,
+// Threat actors). Each page keeps its own items and selection; the keyboard
+// shortcuts act on whichever page is showing.
 
-let liveItems = [];
+const FEED_PANELS = {};
+function createFeedPanel(view, listId, detailId, emptyState) {
+  FEED_PANELS[view] = { view, listId, detailId, emptyState, items: [], selectedId: null, shownId: null };
+  return FEED_PANELS[view];
+}
+
+const livePanel = createFeedPanel('live-feed', 'liveFeed', 'liveDetail', () => (
+  lastOverviewData && lastOverviewData.sources.total === 0
+    ? { title: 'No sources yet', hint: 'Add an RSS or Atom feed to start collecting.' }
+    : { title: 'Nothing matches these filters', hint: 'Try clearing the search, severity, source or date filters.' }
+));
 let liveTotal = 0;
-let liveSelectedId = null;
-let liveDetailShownId = null;
 let liveDensity = 'compact';
 try { liveDensity = localStorage.getItem('pantomath-density') || 'compact'; } catch (e) { /* default */ }
 
 function setLiveDensity(density) {
   liveDensity = density;
   try { localStorage.setItem('pantomath-density', density); } catch (e) { /* not remembered */ }
-  document.getElementById('liveFeed').dataset.density = density;
-  document.querySelectorAll('#liveDensity button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.density === density)));
+  document.querySelectorAll('.feed-table').forEach(t => { t.dataset.density = density; });
+  document.querySelectorAll('.density-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.density === density)));
 }
 setLiveDensity(liveDensity);
-document.querySelectorAll('#liveDensity button').forEach(btn => btn.addEventListener('click', () => setLiveDensity(btn.dataset.density)));
+document.querySelectorAll('.density-seg button').forEach(btn => btn.addEventListener('click', () => setLiveDensity(btn.dataset.density)));
 
 (function fillCategoryFilter() {
   const select = document.getElementById('liveCategory');
@@ -1669,7 +1665,8 @@ document.getElementById('liveSource').addEventListener('change', (e) => { liveSo
 document.getElementById('liveCategory').addEventListener('change', (e) => { liveCategory = e.target.value; loadLiveFeed(1); });
 document.getElementById('liveMarkAllRead').addEventListener('click', () => {
   try { localStorage.setItem(READ_MARK_KEY, String(Date.now() / 1000)); } catch (e) { /* storage disabled */ }
-  renderLiveRows();
+  Object.values(FEED_PANELS).forEach(renderFeedRows);
+  updateLiveSubtitle();
   refreshShell();
   showToast('Marked everything as read');
 });
@@ -1688,17 +1685,17 @@ function populateLiveSourceFilter() {
 
 function updateLiveSubtitle() {
   const filtered = liveSearchTerm || liveSeverities.size < 3 || liveDateFrom || liveDateTo || liveSourceId || liveCategory;
-  const newCount = liveItems.filter(i => i.fetched_at > unreadSince()).length;
+  const newCount = livePanel.items.filter(i => i.fetched_at > unreadSince()).length;
   document.getElementById('liveSubtitle').textContent =
     `${liveTotal} item${liveTotal === 1 ? '' : 's'}${filtered ? ' match these filters' : ''}, newest arrivals first. ` +
     (newCount ? `${newCount} new on this page since ${fmtClock(unreadSince())}.` : 'Nothing new on this page.');
 }
 
-function liveRowHtml(i, unread) {
+function feedRowHtml(panel, i, unread) {
   const chip = i.cves[0] || i.ips[0] || (i.hashes[0] ? i.hashes[0].slice(0, 12) + '…' : '') || i.emails[0] || '';
   const total = i.cves.length + i.ips.length + i.hashes.length + i.emails.length;
   const saved = !!i.bookmarked;
-  return `<div class="feed-row${unread ? ' unread' : ''}${i.id === liveSelectedId ? ' selected' : ''}" data-id="${escapeAttr(i.id)}" role="listitem">
+  return `<div class="feed-row${unread ? ' unread' : ''}${i.id === panel.selectedId ? ' selected' : ''}" data-id="${escapeAttr(i.id)}" role="listitem">
     <span class="unread-dot" aria-label="${unread ? 'New' : ''}"></span>
     <span class="sev-pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
     <div class="feed-row-main">
@@ -1712,76 +1709,78 @@ function liveRowHtml(i, unread) {
   </div>`;
 }
 
-function renderLiveRows() {
-  const el = document.getElementById('liveFeed');
-  if (!liveItems.length) {
-    const noSources = lastOverviewData && lastOverviewData.sources.total === 0;
-    el.innerHTML = `<div class="card-empty"><strong>${noSources ? 'No sources yet' : 'Nothing matches these filters'}</strong>` +
-      `${noSources ? 'Add an RSS or Atom feed to start collecting.' : 'Try clearing the search, severity, source or date filters.'}</div>`;
+function renderFeedRows(panel) {
+  const el = document.getElementById(panel.listId);
+  el.dataset.density = liveDensity;
+  if (!panel.items.length) {
+    const empty = panel.emptyState();
+    el.innerHTML = `<div class="card-empty"><strong>${escapeHtml(empty.title)}</strong>${escapeHtml(empty.hint)}</div>`;
     return;
   }
   const since = unreadSince();
-  const anyUnread = liveItems.some(i => i.fetched_at > since);
+  const anyUnread = panel.items.some(i => i.fetched_at > since);
   const parts = anyUnread ? ['<div class="feed-divider new">New since you last looked</div>'] : [];
   let earlierShown = false;
-  for (const i of liveItems) {
+  for (const i of panel.items) {
     const unread = i.fetched_at > since;
     if (anyUnread && !unread && !earlierShown) { parts.push('<div class="feed-divider">Earlier</div>'); earlierShown = true; }
-    parts.push(liveRowHtml(i, unread));
+    parts.push(feedRowHtml(panel, i, unread));
   }
   el.innerHTML = parts.join('');
   el.querySelectorAll('.feed-row').forEach(row => {
     row.addEventListener('click', (e) => {
-      const item = liveItems.find(i => i.id === row.dataset.id);
+      const item = panel.items.find(i => i.id === row.dataset.id);
       if (!item) return;
-      if (e.target.closest('[data-action="bookmark"]')) toggleLiveBookmark(item);
-      else selectLiveItem(item.id);
+      if (e.target.closest('[data-action="bookmark"]')) toggleFeedBookmark(panel, item);
+      else selectFeedItem(panel, item.id);
     });
   });
 }
 
-async function toggleLiveBookmark(item) {
+async function toggleFeedBookmark(panel, item) {
   const next = !item.bookmarked;
   await toggleBookmark(item.id, next);
+  panel.items.forEach(x => { if (x.id === item.id) x.bookmarked = next; });
   item.bookmarked = next;
-  renderLiveRows();
-  if (liveDetailShownId === item.id) renderLiveDetail(item, { force: true });
+  renderFeedRows(panel);
+  if (panel.shownId === item.id) renderFeedDetail(panel, item, { force: true });
   showToast(next ? 'Saved' : 'Removed from saved');
+  if (panel.view === 'saved' && !next) loadFeedPage('saved');
 }
 
-function selectLiveItem(id, { scroll = false } = {}) {
-  const item = liveItems.find(i => i.id === id);
+function selectFeedItem(panel, id, { scroll = false } = {}) {
+  const item = panel.items.find(i => i.id === id);
   if (!item) return;
-  liveSelectedId = id;
-  document.querySelectorAll('#liveFeed .feed-row').forEach(r => r.classList.toggle('selected', r.dataset.id === id));
-  renderLiveDetail(item);
-  if (scroll) document.querySelector(`#liveFeed .feed-row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
+  panel.selectedId = id;
+  document.querySelectorAll(`#${panel.listId} .feed-row`).forEach(r => r.classList.toggle('selected', r.dataset.id === id));
+  renderFeedDetail(panel, item);
+  if (scroll) document.querySelector(`#${panel.listId} .feed-row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
 }
 
-function closeLiveDetail() {
-  liveSelectedId = null;
-  liveDetailShownId = null;
-  document.getElementById('liveDetail').hidden = true;
-  document.getElementById('view-live-feed').classList.remove('has-detail');
-  document.querySelectorAll('#liveFeed .feed-row.selected').forEach(r => r.classList.remove('selected'));
+function closeFeedDetail(panel) {
+  panel.selectedId = null;
+  panel.shownId = null;
+  document.getElementById(panel.detailId).hidden = true;
+  document.getElementById('view-' + panel.view).classList.remove('has-detail');
+  document.querySelectorAll(`#${panel.listId} .feed-row.selected`).forEach(r => r.classList.remove('selected'));
 }
 
-function renderLiveDetail(i, { force = false } = {}) {
-  if (!force && liveDetailShownId === i.id) return;
-  liveDetailShownId = i.id;
-  const panel = document.getElementById('liveDetail');
-  document.getElementById('view-live-feed').classList.add('has-detail');
-  panel.hidden = false;
+function renderFeedDetail(panel, i, { force = false } = {}) {
+  if (!force && panel.shownId === i.id) return;
+  panel.shownId = i.id;
+  const el = document.getElementById(panel.detailId);
+  document.getElementById('view-' + panel.view).classList.add('has-detail');
+  el.hidden = false;
   const indicators = [
     ...i.cves.map(v => ['cve', 'CVE', v]), ...i.ips.map(v => ['ip', 'IP', v]),
     ...i.hashes.map(v => ['hash', 'Hash', v]), ...i.emails.map(v => ['email', 'Email', v]),
   ];
   const summary = stripHtml(i.summary || '');
-  panel.innerHTML = `
+  el.innerHTML = `
     <div class="detail-top">
       <span class="sev-pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
       ${i.category ? `<span class="chip">${escapeHtml(i.category.charAt(0).toUpperCase() + i.category.slice(1))}</span>` : ''}
-      <button type="button" class="icon-btn-sq" id="liveDetailClose" aria-label="Close details">${CLOSE_ICON}</button>
+      <button type="button" class="icon-btn-sq" data-role="close" aria-label="Close details">${CLOSE_ICON}</button>
     </div>
     <h3 class="detail-title">${escapeHtml(i.title)}</h3>
     <dl class="detail-meta">
@@ -1795,7 +1794,7 @@ function renderLiveDetail(i, { force = false } = {}) {
     <section class="detail-section">
       <div class="detail-section-head">
         <h4>Indicators (${indicators.length})</h4>
-        ${indicators.length ? '<button type="button" class="btn btn-sm" id="liveCopyAll">Copy all</button>' : ''}
+        ${indicators.length ? '<button type="button" class="btn btn-sm" data-role="copy-all">Copy all</button>' : ''}
       </div>
       ${indicators.length ? indicators.map(([type, label, v]) => `
         <div class="ioc-line">
@@ -1804,59 +1803,247 @@ function renderLiveDetail(i, { force = false } = {}) {
           <button type="button" class="row-icon" data-copy="${escapeAttr(v)}" aria-label="Copy ${escapeAttr(v)}">${COPY_ICON}</button>
         </div>`).join('') : '<p class="muted">No CVEs, IP addresses, hashes or emails were found in this item.</p>'}
     </section>
-    <section class="detail-section" id="liveRelated"></section>
+    <section class="detail-section" data-role="related"></section>
     <div class="detail-actions">
       <a class="btn btn-primary" href="${safeHref(i.link)}" target="_blank" rel="noopener">Open original &#8599;</a>
-      <button type="button" class="btn" id="liveDetailSave">${i.bookmarked ? '&#9733; Saved' : '&#9734; Save'}</button>
+      <button type="button" class="btn" data-role="save">${i.bookmarked ? '&#9733; Saved' : '&#9734; Save'}</button>
     </div>`;
-  document.getElementById('liveDetailClose').onclick = closeLiveDetail;
-  document.getElementById('liveDetailSave').onclick = () => toggleLiveBookmark(i);
-  const copyAll = document.getElementById('liveCopyAll');
+  el.querySelector('[data-role="close"]').onclick = () => closeFeedDetail(panel);
+  el.querySelector('[data-role="save"]').onclick = () => toggleFeedBookmark(panel, i);
+  const copyAll = el.querySelector('[data-role="copy-all"]');
   if (copyAll) copyAll.onclick = () => copyText(indicators.map(x => x[2]).join('\n'), `${indicators.length} indicator${indicators.length === 1 ? '' : 's'}`);
-  panel.querySelectorAll('[data-copy]').forEach(btn => { btn.onclick = () => copyText(btn.dataset.copy, btn.dataset.copy); });
-  panel.querySelectorAll('.ioc-value').forEach(btn => {
-    btn.onclick = () => {
-      currentIocType = btn.dataset.iocType;
-      iocCurrentPage = 1;
-      navigateTo('iocs');
-      showIocArticles(btn.dataset.iocType, btn.dataset.iocValue);
-    };
+  el.querySelectorAll('[data-copy]').forEach(btn => { btn.onclick = () => copyText(btn.dataset.copy, btn.dataset.copy); });
+  el.querySelectorAll('.ioc-value').forEach(btn => {
+    btn.onclick = () => openMention({ cve: 'cves', ip: 'ips', hash: 'hashes', email: 'emails' }[btn.dataset.iocType], btn.dataset.iocValue);
   });
-  loadRelated(i);
+  loadRelated(panel, i);
 }
 
-async function loadRelated(i) {
-  const el = document.getElementById('liveRelated');
+async function loadRelated(panel, i) {
+  const el = document.getElementById(panel.detailId).querySelector('[data-role="related"]');
   const pick = i.cves[0] ? ['cve', i.cves[0]] : i.ips[0] ? ['ip', i.ips[0]] : i.hashes[0] ? ['hash', i.hashes[0]] : null;
   if (!pick) { el.hidden = true; return; }
   const [type, value] = pick;
+  const short = value.length > 24 ? value.slice(0, 22) + '…' : value;
   const related = (await fetchItems({ ioc_type: type, ioc_value: value, limit: 6 })).filter(r => r.id !== i.id).slice(0, 3);
-  if (liveDetailShownId !== i.id) return;  // the selection moved on while this loaded
+  if (panel.shownId !== i.id) return;  // the selection moved on while this loaded
   el.hidden = false;
   el.innerHTML = '<h4>Related</h4>' + (related.length
     ? related.map(r => `<a class="related-link" href="${safeHref(r.link)}" target="_blank" rel="noopener">
         <span class="related-title">${escapeHtml(r.title)}</span>
-        <span class="related-why">Also mentions ${escapeHtml(value.length > 24 ? value.slice(0, 22) + '…' : value)}. ${escapeHtml(r.source_name)}, ${escapeHtml(fmtClock(effectiveTs(r)))}</span>
+        <span class="related-why">Also mentions ${escapeHtml(short)}. ${escapeHtml(r.source_name)}, ${escapeHtml(fmtClock(effectiveTs(r)))}</span>
       </a>`).join('')
-    : `<p class="muted">No other items mention ${escapeHtml(value.length > 24 ? value.slice(0, 22) + '…' : value)}.</p>`);
+    : `<p class="muted">No other items mention ${escapeHtml(short)}.</p>`);
+}
+
+// A CVE, IP, hash or email opens its drill-down on Indicators; a vendor or
+// threat actor opens that page with it selected.
+function openMention(field, value) {
+  if (field === 'vendors') { selectedVendor = value; navigateTo('vendors'); return; }
+  if (field === 'actors') { selectedActor = value; navigateTo('threat-actors'); return; }
+  const type = { cves: 'cve', ips: 'ip', hashes: 'hash', emails: 'email' }[field];
+  currentIocType = type;
+  iocCurrentPage = 1;
+  navigateTo('iocs');
+  showIocArticles(type, value);
 }
 
 document.addEventListener('keydown', (e) => {
-  if (currentView() !== 'live-feed' || e.ctrlKey || e.metaKey || e.altKey) return;
+  const panel = FEED_PANELS[currentView()];
+  if (!panel || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
   if (document.querySelector('.modal-overlay.open')) return;
-  const index = liveItems.findIndex(i => i.id === liveSelectedId);
+  const index = panel.items.findIndex(i => i.id === panel.selectedId);
   if (e.key === 'j' || e.key === 'k') {
     e.preventDefault();
-    const next = e.key === 'j' ? Math.min(liveItems.length - 1, index + 1) : Math.max(0, index - 1);
-    if (liveItems[next]) selectLiveItem(liveItems[next].id, { scroll: true });
+    const next = e.key === 'j' ? Math.min(panel.items.length - 1, index + 1) : Math.max(0, index - 1);
+    if (panel.items[next]) selectFeedItem(panel, panel.items[next].id, { scroll: true });
   } else if (e.key === 'o' && index >= 0) {
-    window.open(safeHref(liveItems[index].link), '_blank', 'noopener');
+    window.open(safeHref(panel.items[index].link), '_blank', 'noopener');
   } else if (e.key === 's' && index >= 0) {
-    toggleLiveBookmark(liveItems[index]);
-  } else if (e.key === 'Escape' && liveSelectedId) {
-    closeLiveDetail();
+    toggleFeedBookmark(panel, panel.items[index]);
+  } else if (e.key === 'Escape' && panel.selectedId) {
+    closeFeedDetail(panel);
   }
+});
+
+// -------------------------------------------------------------- feed pages (0.6.1)
+
+const FEED_PAGE_LIMIT = 200;
+
+// Same order as /api/items: arrival minute, then published date.
+function feedOrder(a, b) {
+  return Math.floor(b.fetched_at / 60) - Math.floor(a.fetched_at / 60) || effectiveTs(b) - effectiveTs(a);
+}
+
+// Two filters OR'd together (the API ANDs filters within one request),
+// e.g. Vulnerabilities = "from a Vulnerability source" OR "mentions a CVE".
+async function fetchEither(paramsA, paramsB) {
+  const [a, b] = await Promise.all([
+    fetchItems({ limit: FEED_PAGE_LIMIT, ...paramsA }),
+    fetchItems({ limit: FEED_PAGE_LIMIT, ...paramsB }),
+  ]);
+  const merged = new Map();
+  [...a, ...b].forEach(i => merged.set(i.id, i));
+  return [...merged.values()].sort(feedOrder).slice(0, FEED_PAGE_LIMIT);
+}
+
+const FEED_PAGES = {
+  critical: {
+    key: 'critical', list: 'feedCritical', mentions: ['cves', 'vendors', 'actors'], fourth: 'cve',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, severity: 'high' }),
+    empty: { title: 'No high-severity items', hint: 'Items scored high severity will appear here.' },
+  },
+  vulnerabilities: {
+    key: 'vulns', list: 'feedVulnerabilities', mentions: ['cves', 'vendors'], fourth: 'high',
+    fetch: () => fetchEither({ category: 'vulnerability' }, { has_cve: true }),
+    empty: { title: 'No vulnerability items yet', hint: 'Items that mention a CVE, or come from a Vulnerability source, will appear here.' },
+  },
+  malware: {
+    key: 'malware', list: 'feedMalware', mentions: ['actors', 'vendors', 'hashes'], fourth: 'high',
+    fetch: () => fetchEither({ category: 'malware' }, { has_actor: true }),
+    empty: { title: 'No malware items yet', hint: 'Items that name a threat actor, or come from a Malware source, will appear here.' },
+  },
+  ransomware: {
+    key: 'ransomware', list: 'feedRansomware', mentions: ['actors', 'vendors', 'cves'], fourth: 'high',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, keyword: 'ransomware' }),
+    empty: { title: 'No ransomware items yet', hint: 'Items that mention ransomware will appear here.' },
+  },
+  saved: {
+    key: 'saved', list: 'feedSaved', mentions: ['cves', 'vendors', 'actors'], fourth: 'high',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, bookmarked_only: true }),
+    empty: { title: 'Nothing saved yet', hint: 'Select an item and press Save, or use the star on any row.' },
+  },
+};
+
+Object.entries(FEED_PAGES).forEach(([view, cfg]) => {
+  cfg.allItems = [];
+  cfg.filterText = '';
+  cfg.panel = createFeedPanel(view, cfg.list, cfg.key + 'Detail', () => (
+    cfg.filterText ? { title: 'Nothing matches the filter', hint: 'Clear the filter to see every item.' } : cfg.empty
+  ));
+  let debounce = null;
+  document.getElementById(cfg.key + 'Filter').addEventListener('input', (e) => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { cfg.filterText = e.target.value.trim().toLowerCase(); applyFeedPageFilter(cfg); }, 150);
+  });
+});
+
+async function loadFeedPage(view) {
+  const cfg = FEED_PAGES[view];
+  const items = await cfg.fetch();
+  cfg.allItems = items;
+  renderFeedStats(cfg.key + 'Stats', items, cfg.fourth);
+  renderMentions(document.getElementById(cfg.key + 'Mentions'), items, cfg.mentions);
+  document.getElementById(cfg.key + 'Note').textContent = items.length >= FEED_PAGE_LIMIT
+    ? `Showing the newest ${FEED_PAGE_LIMIT}. The Live feed's filters reach everything stored.` : '';
+  applyFeedPageFilter(cfg);
+}
+
+function itemMatches(i, text) {
+  if (!text) return true;
+  return [i.title, i.source_name, stripHtml(i.summary || ''), ...i.cves, ...i.ips, ...i.hashes, ...i.vendors, ...i.actors]
+    .some(v => (v || '').toLowerCase().includes(text));
+}
+
+function applyFeedPageFilter(cfg) {
+  cfg.panel.items = cfg.allItems.filter(i => itemMatches(i, cfg.filterText));
+  renderFeedRows(cfg.panel);
+  const selected = cfg.panel.items.find(i => i.id === cfg.panel.selectedId);
+  if (selected) renderFeedDetail(cfg.panel, selected);
+}
+
+function renderFeedStats(elId, items, fourth, first = null) {
+  const since = unreadSince();
+  const dayAgo = Date.now() / 1000 - 86400;
+  const unread = items.filter(i => i.fetched_at > since).length;
+  const capped = items.length >= FEED_PAGE_LIMIT;
+  const cells = [
+    first || { label: 'Items', value: capped ? `${FEED_PAGE_LIMIT}+` : items.length, note: capped ? `showing the newest ${FEED_PAGE_LIMIT}` : 'newest arrivals first' },
+    { label: 'New since you last looked', value: unread, tone: unread ? 'signal' : '', note: unread ? `since ${fmtClock(since)}` : 'nothing new' },
+    { label: 'Published in the last 24 hours', value: items.filter(i => effectiveTs(i) >= dayAgo).length, note: 'by published date' },
+    fourth === 'cve'
+      ? { label: 'Mention a CVE', value: items.filter(i => i.cves.length).length, note: `${new Set(items.flatMap(i => i.cves)).size} distinct CVEs` }
+      : { label: 'High severity', value: items.filter(i => i.severity === 'high').length, tone: 'high', note: `of ${items.length} shown` },
+  ];
+  document.getElementById(elId).innerHTML = cells.map(c => `
+    <div class="kpi static">
+      <span class="kpi-label">${escapeHtml(c.label)}</span>
+      <span class="kpi-value${c.tone ? ' tone-' + c.tone : ''}">${escapeHtml(String(c.value))}</span>
+      <span class="kpi-note">${escapeHtml(c.note)}</span>
+    </div>`).join('');
+}
+
+const MENTION_HINTS = {
+  cves: 'Open this CVE on Indicators', ips: 'Open this IP address on Indicators', hashes: 'Open this hash on Indicators',
+  vendors: 'Open this vendor', actors: 'Open this threat actor',
+};
+function renderMentions(el, items, fields) {
+  const counts = new Map();
+  items.forEach(i => fields.forEach(f => new Set(i[f]).forEach(v => {
+    const k = f + '\u0000' + v;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  })));
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  if (!top.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<span>Most mentioned here:</span>' + top.map(([k, n]) => {
+    const [f, v] = k.split('\u0000');
+    const mono = f === 'cves' || f === 'ips' || f === 'hashes';
+    const label = f === 'hashes' ? v.slice(0, 12) + '…' : v;
+    return `<button type="button" class="mention-chip${mono ? ' mono' : ''}" data-field="${f}" data-value="${escapeAttr(v)}" title="${MENTION_HINTS[f]}">${escapeHtml(label)}<span class="count">${n}</span></button>`;
+  }).join('');
+  el.querySelectorAll('.mention-chip').forEach(chip => { chip.onclick = () => openMention(chip.dataset.field, chip.dataset.value); });
+}
+
+// Vendors and Threat actors: a chip per name, then the same list and panel.
+const TAG_PAGES = {
+  vendors: { key: 'vendors', list: 'feedVendors', filter: 'vendorFilter', chips: 'vendorChips', noun: 'vendor' },
+  'threat-actors': { key: 'actors', list: 'feedActors', filter: 'actorFilter', chips: 'actorChips', noun: 'threat actor' },
+};
+Object.entries(TAG_PAGES).forEach(([view, cfg]) => {
+  cfg.name = null;
+  cfg.panel = createFeedPanel(view, cfg.list, cfg.key + 'Detail', () => (
+    cfg.name ? { title: `No stored items name ${cfg.name}`, hint: '' }
+      : { title: `No ${cfg.noun}s yet`, hint: `They appear here once stored items name them.` }
+  ));
+  document.getElementById(cfg.filter).addEventListener('input', (e) => {
+    const text = e.target.value.trim().toLowerCase();
+    document.querySelectorAll(`#${cfg.chips} .tag-chip`).forEach(chip => {
+      chip.hidden = !!text && !chip.dataset[cfg.noun === 'vendor' ? 'vendor' : 'actor'].toLowerCase().includes(text);
+    });
+  });
+});
+
+function showTagItems(view, name, total, items) {
+  const cfg = TAG_PAGES[view];
+  const changed = cfg.name !== name;
+  cfg.name = name;
+  cfg.panel.items = items;
+  if (changed && cfg.panel.selectedId) closeFeedDetail(cfg.panel);
+  renderFeedRows(cfg.panel);
+  const selected = items.find(i => i.id === cfg.panel.selectedId);
+  if (selected) renderFeedDetail(cfg.panel, selected);
+  if (!name) { document.getElementById(cfg.key + 'Stats').innerHTML = ''; return; }
+  renderFeedStats(cfg.key + 'Stats', items, 'high', {
+    label: `Items naming ${name}`, value: total,
+    note: total > items.length ? `showing the newest ${items.length}` : 'all shown below',
+  });
+}
+
+// -------------------------------------------------------------- settings (0.6.1)
+
+document.querySelectorAll('.settings-nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.settings-nav button').forEach(b => b.classList.toggle('active', b === btn));
+    document.getElementById(btn.dataset.target).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+// The switches are toggled by their own handlers through the "on" class;
+// keep aria-checked in step so screen readers hear the real state.
+document.querySelectorAll('.toggle-switch').forEach(sw => {
+  const sync = () => sw.setAttribute('aria-checked', String(sw.classList.contains('on')));
+  sync();
+  new MutationObserver(sync).observe(sw, { attributes: true, attributeFilter: ['class'] });
 });
 
 // -------------------------------------------------------------- indicators (0.6.0)
@@ -1897,9 +2084,17 @@ function renderIocTable(rows) {
       <button type="button" class="row-icon" data-copy="${escapeAttr(r.name)}" aria-label="Copy ${escapeAttr(r.name)}">${COPY_ICON}</button>
     </div>`).join('');
 
+  const syncSelectAll = () => {
+    const all = document.getElementById('iocSelectAll');
+    const picked = rows.filter(r => iocSelection.has(r.name)).length;
+    all.checked = picked === rows.length;
+    all.indeterminate = picked > 0 && picked < rows.length;
+  };
+  syncSelectAll();
   el.querySelectorAll('.ioc-check').forEach(box => {
     box.onchange = () => {
       if (box.checked) iocSelection.add(box.dataset.value); else iocSelection.delete(box.dataset.value);
+      syncSelectAll();
       updateIocActionBar();
     };
   });

@@ -1,0 +1,35 @@
+From d9646928bbbfb48618fdb16cd230f1875c392953 Mon Sep 17 00:00:00 2001
+From: "Claude (for PAIX Ghana Ops)" <noreply@example.com>
+Date: Mon, 28 Sep 2026 18:49:20 +0000
+Subject: [PATCH] Add .gitignore for Python caches, virtualenvs, build output
+ and the dev database
+
+---
+ .gitignore | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+ create mode 100644 .gitignore
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..e63ef7c
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,15 @@
++# Python bytecode and tool caches: regenerated automatically, never committed
++__pycache__/
++*.py[cod]
++*.egg-info/
++.pytest_cache/
++.ruff_cache/
++
++# Local environments and build output
++venv/
++.venv/
++dist/
++build/
++
++# Development database created by `make run`
++data/
+-- 
+2.43.0
+

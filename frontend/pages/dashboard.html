@@ -121,7 +121,7 @@
       <div class="view-head">
         <div><h2>Live feed</h2><div class="desc" id="liveSubtitle">Everything Pantomath has collected, newest arrivals first.</div></div>
         <div class="view-actions">
-          <div class="seg" role="group" aria-label="Row density" id="liveDensity">
+          <div class="seg density-seg" role="group" aria-label="Row density" id="liveDensity">
             <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
             <button type="button" data-density="compact" aria-pressed="true">Compact</button>
           </div>
@@ -163,38 +163,158 @@
 
     <!-- CATEGORY-FILTERED VIEWS (Critical / Vulnerabilities / Malware / Ransomware) -->
     <section class="view" id="view-critical">
-      <div class="view-head"><div><h2>High severity</h2><div class="desc">High-severity items from the last 24 hours</div></div></div>
-      <div class="feed" id="feedCritical"></div>
+      <div class="view-head">
+        <div><h2>High severity</h2><div class="desc">Everything scored high severity, newest arrivals first.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="criticalStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="criticalMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="criticalFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="criticalFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedCritical" data-density="compact" role="list" aria-label="High severity items"></div>
+          <p class="list-note" id="criticalNote"></p>
+        </div>
+        <aside class="detail-panel" id="criticalDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
     <section class="view" id="view-vulnerabilities">
-      <div class="view-head"><div><h2>Vulnerabilities</h2><div class="desc">Articles containing a detected CVE, or from a source tagged as vulnerability/CVE</div></div></div>
-      <div class="feed" id="feedVulnerabilities"></div>
+      <div class="view-head">
+        <div><h2>Vulnerabilities</h2><div class="desc">Items that mention a CVE, or come from a source in the Vulnerability category.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="vulnsStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="vulnsMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="vulnsFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="vulnsFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedVulnerabilities" data-density="compact" role="list" aria-label="Vulnerabilities items"></div>
+          <p class="list-note" id="vulnsNote"></p>
+        </div>
+        <aside class="detail-panel" id="vulnsDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
     <section class="view" id="view-malware">
-      <div class="view-head"><div><h2>Malware</h2><div class="desc">Articles with a detected threat actor, or from a source tagged as malware/ransomware</div></div></div>
-      <div class="feed" id="feedMalware"></div>
+      <div class="view-head">
+        <div><h2>Malware</h2><div class="desc">Items that name a threat actor, or come from a source in the Malware category.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="malwareStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="malwareMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="malwareFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="malwareFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedMalware" data-density="compact" role="list" aria-label="Malware items"></div>
+          <p class="list-note" id="malwareNote"></p>
+        </div>
+        <aside class="detail-panel" id="malwareDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
     <section class="view" id="view-ransomware">
-      <div class="view-head"><div><h2>Ransomware</h2><div class="desc">Keyword match on "ransomware" across all sources</div></div></div>
-      <div class="feed" id="feedRansomware"></div>
+      <div class="view-head">
+        <div><h2>Ransomware</h2><div class="desc">Items that mention ransomware, from any source.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="ransomwareStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="ransomwareMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="ransomwareFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="ransomwareFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedRansomware" data-density="compact" role="list" aria-label="Ransomware items"></div>
+          <p class="list-note" id="ransomwareNote"></p>
+        </div>
+        <aside class="detail-panel" id="ransomwareDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
 
     <!-- THREAT ACTORS -->
     <section class="view" id="view-threat-actors">
       <div class="view-head">
-        <div><h2>Threat Actors</h2><div class="desc">Rule-based detection of named APT groups &amp; ransomware gangs — click a name to filter</div></div>
+        <div><h2>Threat actors</h2><div class="desc">Threat groups named in stored items, matched against a curated list of names. Pick one to see its coverage.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
       </div>
-      <div id="actorChips" style="margin-bottom:16px;"></div>
-      <div class="feed" id="feedActors"></div>
+      <div class="card tag-picker">
+        <div class="tag-picker-head">
+          <label for="actorFilter" class="visually-hidden">Find a threat actor</label>
+          <input type="search" class="text-input" id="actorFilter" placeholder="Find a threat actor">
+          <span class="muted" id="actorCount"></span>
+        </div>
+        <div class="tag-chips" id="actorChips" role="group" aria-label="Threat actors"></div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="actorsStats" aria-label="Summary"></div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedActors" data-density="compact" role="list" aria-label="Threat actors items"></div>
+          <p class="list-note" id="actorsNote"></p>
+        </div>
+        <aside class="detail-panel" id="actorsDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
 
     <!-- VENDORS -->
     <section class="view" id="view-vendors">
       <div class="view-head">
-        <div><h2>Vendors</h2><div class="desc">Products/companies mentioned in intel — click a name to filter</div></div>
+        <div><h2>Vendors</h2><div class="desc">Companies and products named in stored items. Pick one to see its coverage.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
       </div>
-      <div id="vendorChips" style="margin-bottom:16px;"></div>
-      <div class="feed" id="feedVendors"></div>
+      <div class="card tag-picker">
+        <div class="tag-picker-head">
+          <label for="vendorFilter" class="visually-hidden">Find a vendor</label>
+          <input type="search" class="text-input" id="vendorFilter" placeholder="Find a vendor">
+          <span class="muted" id="vendorCount"></span>
+        </div>
+        <div class="tag-chips" id="vendorChips" role="group" aria-label="Vendors"></div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="vendorsStats" aria-label="Summary"></div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedVendors" data-density="compact" role="list" aria-label="Vendors items"></div>
+          <p class="list-note" id="vendorsNote"></p>
+        </div>
+        <aside class="detail-panel" id="vendorsDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
 
     <!-- IOCS -->
@@ -229,7 +349,7 @@
           <section class="card" id="iocArticlesPanel" style="display:none;">
             <div class="card-head"><div><h3 id="iocArticlesTitle">Articles</h3><div class="card-sub" id="iocAlongside"></div></div></div>
             <table class="sources-table ioc-articles">
-              <thead><tr><th>Severity</th><th>Title</th><th>Source</th><th>Published</th></tr></thead>
+              <thead><tr><th>Severity</th><th>Title</th><th>Source</th><th>Seen</th></tr></thead>
               <tbody id="iocArticlesBody"></tbody>
             </table>
           </section>
@@ -237,7 +357,7 @@
         <div class="ioc-side">
           <section class="card">
             <div class="card-head ioc-calendar-head">
-              <div><h3>Activity calendar</h3><div class="card-sub">Days on which new indicators appeared</div></div>
+              <div><h3>Activity calendar</h3><div class="card-sub" id="iocCalSub">Distinct CVEs seen each day</div></div>
               <button type="button" class="btn btn-sm" id="iocClearDateBtn" style="display:none;">Clear date &times;</button>
             </div>
             <div class="ioc-cal-body"><div id="iocCalendar"></div></div>
@@ -248,8 +368,28 @@
 
     <!-- SAVED -->
     <section class="view" id="view-saved">
-      <div class="view-head"><div><h2>Saved</h2><div class="desc">Articles you've bookmarked</div></div></div>
-      <div class="feed" id="feedSaved"></div>
+      <div class="view-head">
+        <div><h2>Saved</h2><div class="desc">Items starred with Save. Saves are shared by everyone using this Pantomath.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="savedStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="savedMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="savedFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="savedFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedSaved" data-density="compact" role="list" aria-label="Saved items"></div>
+          <p class="list-note" id="savedNote"></p>
+        </div>
+        <aside class="detail-panel" id="savedDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
 
     <!-- SOURCES -->
@@ -324,99 +464,166 @@
 
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
-      <div class="view-head"><div><h2>Settings</h2><div class="desc">Configuration &amp; data management</div></div><button class="btn" id="lockSettingsBtn" title="Re-lock Settings &amp; Sources">&#128274; Lock</button></div>
-
-      <div class="settings-section">
-        <h4>Feeds</h4>
-        <div class="settings-row">
-          <div><div class="settings-label">Default poll interval for new sources</div><div class="settings-hint">Applied as the default in the Add Source form</div></div>
-          <input type="number" id="defaultInterval" value="300" min="60" style="width:90px; background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 8px; color:var(--text); font-family:var(--font-mono);">
-        </div>
-        <div class="settings-row" style="border-bottom:none;">
-          <div><div class="settings-label">Deep extraction</div><div class="settings-hint">Fetches each new article's full page (not just the RSS teaser) for severity/vendor/threat-actor/IOC detection — RSS summaries are usually too short to contain real indicators. Slower on sources with many new items at once; fails silently back to teaser-only text on paywalls/timeouts. On by default.</div></div>
-          <div class="toggle-switch on" id="deepExtractionToggle"></div>
-        </div>
+      <div class="view-head">
+        <div><h2>Settings</h2><div class="desc">Changes are saved as soon as you make them.</div></div>
+        <div class="view-actions"><button class="btn" id="lockSettingsBtn" title="Lock Settings and Sources again">&#128274; Lock</button></div>
       </div>
-
-      <div class="settings-section">
-        <h4>Notifications</h4>
-        <div class="settings-row">
-          <div><div class="settings-label">Desktop notifications</div><div class="settings-hint">Uses your browser's native notification popup. Requires this tab to stay open — see note below.</div></div>
-          <div class="toggle-switch" id="notifToggle"></div>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label">Notify me for</div><div class="settings-hint">Minimum severity that triggers a notification</div></div>
-          <select id="notifThreshold" style="background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 10px; color:var(--text); font-family:var(--font-mono);">
-            <option value="high">Critical only (High)</option>
-            <option value="medium">High &amp; Medium</option>
-            <option value="low">Everything</option>
-          </select>
-        </div>
-        <div class="settings-row" style="border-bottom:none;">
-          <div class="settings-hint" id="notifPermissionHint" style="max-width:520px;">Browser permission: <span id="notifPermissionState">unknown</span>. Desktop notifications only fire while this dashboard tab is open in your browser, and require a secure connection (HTTPS, or "http://localhost") — browsers silently block the permission prompt on plain HTTP at any other address, with no dialog and no error shown. Pantomath is a web app, not a native app, so there's also no background/OS-level push when the tab is closed.</div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h4>Webhooks</h4>
-        <div class="settings-row" style="border-bottom:none; padding-bottom:6px;">
-          <div><div class="settings-label">Alert via webhook</div><div class="settings-hint">Send a POST request when a new item matches a keyword, a specific source, and/or a minimum severity. Works over plain HTTP — unlike browser notifications, this doesn't need HTTPS.</div></div>
-          <button class="btn btn-primary" id="addWebhookBtn">+ Add Webhook</button>
-        </div>
-        <table class="sources-table">
-          <thead><tr><th>Name</th><th>Trigger</th><th>Status</th><th></th></tr></thead>
-          <tbody id="webhooksTableBody"></tbody>
-        </table>
-      </div>
-
-      <div class="settings-section">
-        <h4>Data</h4>
-        <div class="settings-row">
-          <div><div class="settings-label">Article retention</div><div class="settings-hint">Nothing is ever deleted automatically unless you set a limit here. Default: keep forever.</div></div>
-          <select id="retentionSelect" style="background:var(--bg-raised); border:1px solid var(--line-bright); border-radius:6px; padding:6px 10px; color:var(--text); font-family:var(--font-mono);">
-            <option value="0">Forever (default)</option>
-            <option value="730">2 years</option>
-            <option value="365">1 year</option>
-            <option value="180">6 months</option>
-            <option value="90">90 days</option>
-            <option value="30">30 days</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label" id="storedRangeLabel">Currently stored: —</div><div class="settings-hint">Earliest to latest item on disk, and total count</div></div>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label">Reprocess stored items</div><div class="settings-hint">Re-runs severity/vendor/threat-actor/IOC detection against everything already on disk, using the current parsing logic — no RSS re-fetch. Use this after an upgrade to backfill data for items stored before a detection feature existed. Can take a while with deep extraction on a large history.</div></div>
-          <button class="btn btn-primary" id="reprocessBtn">Reprocess all</button>
-        </div>
-        <div class="settings-row" style="border-bottom:none;">
-          <div class="settings-hint" id="reprocessResult"></div>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label">Backup database</div><div class="settings-hint">Downloads the raw SQLite file (/var/lib/pantomath/pantomath.db)</div></div>
-          <button class="btn" id="backupBtn">Download backup</button>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label">Restore database</div><div class="settings-hint">Replaces ALL current data (items, sources, settings, webhooks) with a previously downloaded backup file. A safety copy of what's currently live is made automatically before the swap.</div></div>
-          <div>
-            <input type="file" id="restoreFileInput" accept=".db" style="display:none;" />
-            <button class="btn" id="restoreBtn">Restore from file&hellip;</button>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <button type="button" data-target="set-collection" class="active">Collection</button>
+          <button type="button" data-target="set-alerts">Alerts</button>
+          <button type="button" data-target="set-storage">Storage</button>
+          <button type="button" data-target="set-backup">Backup and restore</button>
+          <button type="button" data-target="set-appearance">Appearance</button>
+          <button type="button" data-target="set-security">Security</button>
+        </nav>
+        <div class="settings-main">
+          <div class="settings-card" id="set-collection">
+            <div class="settings-card-head"><h3>Collection</h3><p>How Pantomath fetches and reads your feeds.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <label class="set-label" for="defaultInterval">Default check interval for new sources</label>
+                <p class="set-hint">Pre-filled in the Add source form. Each source can have its own interval.</p>
+              </div>
+              <div class="set-control"><input type="number" class="text-input num-input" id="defaultInterval" value="300" min="60"><span class="unit">seconds</span></div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="deepExtractionLabel">Deep extraction</span>
+                <p class="set-hint">Fetches each new article's full page, not just the RSS summary, before scoring it and extracting indicators. Summaries rarely contain the actual CVEs, IP addresses or hashes. Costs one extra request per article.</p>
+              </div>
+              <div class="set-control"><button type="button" class="toggle-switch on" id="deepExtractionToggle" role="switch" aria-checked="true" aria-labelledby="deepExtractionLabel"></button></div>
+            </div>
           </div>
-        </div>
-        <div class="settings-row" style="border-bottom:none;">
-          <div class="settings-hint" id="restoreResult"></div>
-        </div>
-        <div class="settings-row">
-          <div><div class="settings-label">Export sources</div><div class="settings-hint">Save your source list as JSON</div></div>
-          <button class="btn" id="settingsExportBtn">Export sources.json</button>
-        </div>
-      </div>
 
-      <div class="settings-section">
-        <h4>Appearance</h4>
-        <div class="settings-row">
-          <div><div class="settings-label">Light theme</div><div class="settings-hint">Switches the whole dashboard; also toggleable from the header</div></div>
-          <div class="toggle-switch" id="themeToggleSettings"></div>
+          <div class="settings-card" id="set-alerts">
+            <div class="settings-card-head"><h3>Alerts</h3><p>Hear about new items without watching the dashboard.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="notifLabel">Desktop notifications</span>
+                <p class="set-hint">Your browser's own pop-ups. They only appear while a Pantomath tab is open.</p>
+                <p class="set-hint" id="notifPermissionHint">Browser permission: <span id="notifPermissionState">unknown</span>.</p>
+              </div>
+              <div class="set-control"><button type="button" class="toggle-switch" id="notifToggle" role="switch" aria-checked="false" aria-labelledby="notifLabel"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <label class="set-label" for="notifThreshold">Notify me for</label>
+                <p class="set-hint">The lowest severity that triggers a notification.</p>
+              </div>
+              <div class="set-control">
+                <select id="notifThreshold" class="control-select">
+                  <option value="high">High severity only</option>
+                  <option value="medium">High and medium</option>
+                  <option value="low">Everything</option>
+                </select>
+              </div>
+            </div>
+            <div class="set-row set-row-top">
+              <div class="set-text">
+                <span class="set-label">Webhooks</span>
+                <p class="set-hint">Send a JSON POST to any URL (a chat channel, a ticketing system, your own script) when a new item matches a keyword, a source and/or a minimum severity. Works without a browser open.</p>
+              </div>
+              <div class="set-control"><button class="btn btn-primary" id="addWebhookBtn">+ Add webhook</button></div>
+            </div>
+            <div class="table-wrap">
+              <table class="sources-table webhooks-table">
+                <thead><tr><th>Name</th><th>Trigger</th><th>Status</th><th></th></tr></thead>
+                <tbody id="webhooksTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="settings-card" id="set-storage">
+            <div class="settings-card-head"><h3>Storage</h3><p>What Pantomath keeps, and for how long.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="storedRangeLabel">Currently stored: —</span>
+                <p class="set-hint">Earliest to latest item on disk, and the total.</p>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <label class="set-label" for="retentionSelect">Keep items for</label>
+                <p class="set-hint">Nothing is deleted unless you set a limit here. Older items are removed about once an hour.</p>
+              </div>
+              <div class="set-control">
+                <select id="retentionSelect" class="control-select">
+                  <option value="0">Forever (default)</option>
+                  <option value="730">2 years</option>
+                  <option value="365">1 year</option>
+                  <option value="180">6 months</option>
+                  <option value="90">90 days</option>
+                  <option value="30">30 days</option>
+                </select>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Reprocess stored items</span>
+                <p class="set-hint">Runs severity scoring, vendor and threat-actor tagging and indicator extraction again on everything already stored, with the current rules. Nothing is re-fetched. Worth doing after an upgrade that improves detection.</p>
+                <p class="set-result" id="reprocessResult" role="status"></p>
+              </div>
+              <div class="set-control"><button class="btn btn-primary" id="reprocessBtn">Reprocess all</button></div>
+            </div>
+          </div>
+
+          <div class="settings-card" id="set-backup">
+            <div class="settings-card-head"><h3>Backup and restore</h3><p>Everything lives in one SQLite file.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Back up the database</span>
+                <p class="set-hint">Downloads the SQLite file (<code>/var/lib/pantomath/pantomath.db</code>) with every item, source, setting and webhook.</p>
+              </div>
+              <div class="set-control"><button class="btn" id="backupBtn">Download backup</button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Restore from a backup</span>
+                <p class="set-hint">Replaces <strong>all</strong> current data (items, sources, settings, webhooks) with a backup file. A safety copy of the current database is kept on the server first.</p>
+                <p class="set-result" id="restoreResult" role="status"></p>
+              </div>
+              <div class="set-control">
+                <input type="file" id="restoreFileInput" accept=".db" style="display:none;">
+                <button class="btn" id="restoreBtn">Restore from file&hellip;</button>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Export sources</span>
+                <p class="set-hint">Your source list as JSON, to import on another Pantomath.</p>
+              </div>
+              <div class="set-control"><button class="btn" id="settingsExportBtn">Export sources.json</button></div>
+            </div>
+          </div>
+
+          <div class="settings-card" id="set-appearance">
+            <div class="settings-card-head"><h3>Appearance</h3><p>Remembered in this browser.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="themeLabel">Light theme</span>
+                <p class="set-hint">Also available from the moon button in the header.</p>
+              </div>
+              <div class="set-control"><button type="button" class="toggle-switch" id="themeToggleSettings" role="switch" aria-checked="false" aria-labelledby="themeLabel"></button></div>
+            </div>
+          </div>
+
+          <div class="settings-card" id="set-security">
+            <div class="settings-card-head"><h3>Security</h3><p>Who can change what.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Settings password</span>
+                <p class="set-hint">Needed for Settings, Sources and anything that makes the server fetch a URL. The dashboard, feeds, indicators and analytics stay readable without it, so they work on a shared screen.</p>
+                <p class="set-hint">Forgot it? On the server, run <code>sudo pantomath-admin reset-settings-password</code>.</p>
+              </div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">HTTPS</span>
+                <p class="set-hint">Pantomath listens on port 7373 on every network interface. To put it behind nginx with HTTPS, run <code>sudo pantomath-admin setup-https</code> on the server.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -430,7 +637,7 @@
     <div class="field">
       <label>Source type</label>
       <input type="text" value="RSS / Atom Feed" disabled style="opacity:0.6; cursor:not-allowed;">
-      <div class="hint">v1.0 supports RSS/Atom only. More source types coming later.</div>
+      <div class="hint">RSS and Atom feeds are supported.</div>
     </div>
     <div class="field">
       <label>Name</label>

@@ -157,6 +157,24 @@ shape (triangle high, diamond medium, ring low), never colour alone.
 - **Read state** is per browser (`localStorage`): an item is new if it
   arrived after the later of "last left Pantomath" and "Mark all as read".
 
+## Shared feed pages and the Indicators calendar (0.6.1)
+
+- **One list component.** The Live feed's list and detail panel is a small
+  component (`createFeedPanel` in `app.js`) with per-page state. High
+  severity, Vulnerabilities, Malware, Ransomware, Saved, Vendors and Threat
+  actors each get an instance; keyboard shortcuts act on the visible page.
+  Pages that are an OR of two filters (Vulnerabilities: Vulnerability source
+  OR mentions a CVE) make two requests and merge them, because the items API
+  ANDs filters within one request.
+- **Calendar unit.** `/api/iocs/calendar` returns `count` = distinct
+  indicators of the type seen that day (the unit of the table and of
+  `/api/iocs/summary` for that day) and `articles` = items they appeared in.
+  It used to return the number of items as `count`, which never matched the
+  table next to it.
+- **First/last seen.** In `/api/iocs?detail=1`, mentions, sources and
+  severity follow the selected day, but first and last seen are computed
+  over all items, so "first seen" really is the first time.
+
 ## Extensibility: the connector contract
 
 `pantomath/connectors/base.py` defines `BaseConnector`, an abstract class

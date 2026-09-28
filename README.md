@@ -44,10 +44,12 @@ fresh install shows exactly what you configure.
   jump to it.
 - **Wall screens.** The header shows **Not updating** in red if no data has
   arrived for two minutes, so a frozen screen never looks like a quiet day.
-- **Also:** High severity, Vulnerabilities, Malware and Ransomware views,
-  vendor and threat-actor pages, saved items, webhook alerts, browser
-  notifications, light and dark themes, a phone layout, backup and restore,
-  and an optional retention limit.
+- **High severity, Vulnerabilities, Malware, Ransomware, Saved, Vendors and
+  Threat actors** all use the Live feed's list and detail panel, with a
+  summary (new since you last looked, last 24 hours, high severity) and the
+  CVEs, vendors and actors most mentioned on that page, one click away.
+- **Also:** webhook alerts, browser notifications, light and dark themes, a
+  phone layout, backup and restore, and an optional retention limit.
 
 ## Screenshots
 
@@ -57,6 +59,8 @@ fresh install shows exactly what you configure.
 | **Live feed.** Dense list, unread markers, detail panel. | **Indicators.** Table, selection and export, drill-down, calendar. |
 | ![Sources with health and failure reasons](docs/screenshots/sources.png) | ![Testing a feed before adding it](docs/screenshots/add-source.png) |
 | **Sources.** Health, last success, response time, why a feed fails. | **Add source.** Test the feed before saving. |
+| ![High severity with an item selected](docs/screenshots/high-severity.png) | ![Settings](docs/screenshots/settings.png) |
+| **High severity.** Same list and panel as the Live feed, plus what's most mentioned. | **Settings.** Grouped sections, real switches. |
 | ![Analytics](docs/screenshots/analytics.png) | ![Light theme](docs/screenshots/dashboard-light.png) |
 | **Analytics.** Volume, severity mix, top sources, publishing times. | **Light theme.** |
 
@@ -213,6 +217,17 @@ How it fits together, and why things are the way they are:
   needs. It hasn't been tested.
 
 ## Changelog
+
+**0.6.1** — High severity, Vulnerabilities, Malware, Ransomware, Saved,
+Vendors and Threat actors redesigned on the Live feed's list and detail
+panel, with a summary strip, "most mentioned here" and a filter. Settings
+redesigned: sections with a side menu, clearer wording, keyboard-accessible
+switches. Themed checkboxes, forms and tables (no more white boxes in dark
+mode). Indicators: the calendar now counts distinct indicators, the same
+unit as the table and the tab counts, so the numbers match (the tooltip
+also gives the number of articles); First seen and Last seen are all-time
+even when a day is selected; the drill-down lists when Pantomath saw each
+article.
 
 **0.6.0** — Redesigned Live feed (dense list, detail panel, unread markers,
 source and category filters, keyboard shortcuts), Indicators (table with

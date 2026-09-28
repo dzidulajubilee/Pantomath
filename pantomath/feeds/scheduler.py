@@ -56,13 +56,19 @@ class Scheduler:
             await db.close()
 
     async def poll_source(self, db, src: dict):
+        started = time.monotonic()
         try:
             connector = get_connector(src)
             new_items = await connector.update(db)  # fetch -> normalize -> validate -> store
 
+            # last_success / failing_since / last_duration_ms feed the
+            # Sources page: last_fetched alone can't say when a failing
+            # feed last worked, because it updates on failures too.
+            now = time.time()
             await db.execute(
-                "UPDATE sources SET last_fetched = ?, last_status = 'ok' WHERE id = ?",
-                (time.time(), src["id"]),
+                """UPDATE sources SET last_fetched = ?, last_status = 'ok', last_success = ?,
+                                      failing_since = 0, last_duration_ms = ? WHERE id = ?""",
+                (now, now, int((time.monotonic() - started) * 1000), src["id"]),
             )
             await db.commit()
 
@@ -71,9 +77,12 @@ class Scheduler:
                 await dispatch_webhooks_for_items(db, new_items)
 
         except Exception as e:
+            now = time.time()
             await db.execute(
-                "UPDATE sources SET last_fetched = ?, last_status = ? WHERE id = ?",
-                (time.time(), f"error: {str(e)[:100]}", src["id"]),
+                """UPDATE sources SET last_fetched = ?, last_status = ?, last_duration_ms = ?,
+                                      failing_since = CASE WHEN failing_since > 0 THEN failing_since ELSE ? END
+                   WHERE id = ?""",
+                (now, f"error: {str(e)[:100]}", int((time.monotonic() - started) * 1000), now, src["id"]),
             )
             await db.commit()
 

@@ -29,12 +29,45 @@ THREAT_ACTORS = [
 ACTOR_PATTERN = re.compile(r"\b(APT[-\s]?\d{1,3}|UNC\d{3,5}|FIN\d{1,2}|TA\d{3,4})\b", re.IGNORECASE)
 
 
+# Matching is whole-word, not substring. Substring matching (the original
+# approach) tagged ordinary text constantly, and in a threat-intel feed the
+# damage compounds: "intelligence" -> Intel, "PHP" -> HP, "ASAP" -> SAP,
+# "continue" -> Conti, "display"/"replay" -> Play, and any hash with "f5"
+# in it -> F5. A name now only matches when it isn't glued to another
+# letter or digit, so "Linux-based", "GitHub's" and "(Cisco)" still match.
+_NOT_AFTER_ALNUM = r"(?<![A-Za-z0-9])"
+_NOT_BEFORE_ALNUM = r"(?![A-Za-z0-9])"
+
+# Names that are also everyday English words only match with their real
+# capitalization: "play a role", "padding oracle" (itself a crypto attack
+# name), "threat intel", "zoom in", "meta tags". The residual cost is
+# title-case headlines ("Threat Actors At Play") — far rarer than the
+# lowercase prose this rules out.
+CASE_SENSITIVE_NAMES = {"Apple", "Chrome", "Intel", "Juniper", "Meta", "Oracle", "Play", "Zoom"}
+
+# Extra guards for phrases that are common in exactly this app's feeds.
+# "Threat Intel" is capitalized in headlines all the time and is never
+# about the chip maker.
+_EXTRA_GUARDS = {"Intel": r"(?<![Tt]hreat )"}
+
+
+def _name_pattern(name: str) -> re.Pattern:
+    flags = 0 if name in CASE_SENSITIVE_NAMES else re.IGNORECASE
+    guard = _EXTRA_GUARDS.get(name, "")
+    return re.compile(guard + _NOT_AFTER_ALNUM + re.escape(name) + _NOT_BEFORE_ALNUM, flags)
+
+
+# Compiled once at import — extract_tags runs for every stored item and on
+# every reprocess, against up to MAX_TEXT_LENGTH chars of article text.
+_VENDOR_PATTERNS = [(v, _name_pattern(v)) for v in VENDORS]
+_ACTOR_PATTERNS = [(a, _name_pattern(a)) for a in THREAT_ACTORS]
+
+
 def extract_tags(title: str, summary: str) -> tuple[list[str], list[str]]:
     text = f"{title} {summary}"
-    text_lower = text.lower()
 
-    vendors = [v for v in VENDORS if v.lower() in text_lower]
-    actors = [a for a in THREAT_ACTORS if a.lower() in text_lower]
+    vendors = [name for name, pattern in _VENDOR_PATTERNS if pattern.search(text)]
+    actors = [name for name, pattern in _ACTOR_PATTERNS if pattern.search(text)]
     actors += [m.upper().replace(" ", "") for m in ACTOR_PATTERN.findall(text)]
 
     # de-dupe, preserve order

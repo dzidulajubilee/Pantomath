@@ -45,6 +45,45 @@ function truncateAtSentence(text, targetLen, maxLen) {
   return text.slice(0, targetLen).trim() + '…';
 }
 
+// When an item was published, for display. The feed's own date unless it
+// is later than when Pantomath fetched the item (a publisher's clock or
+// timezone is wrong) — the same rule as _EFFECTIVE_TS in api/routes.py.
+function effectiveTs(item) {
+  const published = Number(item.published) || 0;
+  const fetched = Number(item.fetched_at) || 0;
+  return (published > 0 && published <= fetched + 3600) ? published : fetched;
+}
+
+// "14:05", "Yesterday 22:10" or "25 Sep 08:15", in the viewer's local time.
+function fmtClock(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (d.toDateString() === now.toDateString()) return hm;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday ' + hm;
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ' + hm;
+}
+
+function fmtFull(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function timeTitle(item) {
+  return `Published ${fmtFull(effectiveTs(item))}. Seen by Pantomath ${fmtFull(item.fetched_at)}.`;
+}
+
+// Card time: when it was published, plus when Pantomath saw it if that
+// was much later — lists are still ordered by when items arrived, and a
+// newly added source's backlog would otherwise look out of order.
+function itemTimeLabel(item) {
+  const published = effectiveTs(item);
+  const label = timeAgo(published);
+  return (item.fetched_at - published > 6 * 3600) ? `${label}, seen ${timeAgo(item.fetched_at)}` : label;
+}
+
 function renderFeedCards(containerEl, items, opts) {
   opts = opts || {};
   if (items.length === 0) {
@@ -66,7 +105,7 @@ function renderFeedCards(containerEl, items, opts) {
           ${(i.vendors||[]).slice(0,2).map(v => `<span class="tag-chip" style="padding:2px 8px; margin:0;">${escapeHtml(v)}</span>`).join('')}
           ${(i.actors||[]).slice(0,2).map(a => `<span class="tag-chip" style="padding:2px 8px; margin:0; color:var(--red); border-color:var(--red);">${escapeHtml(a)}</span>`).join('')}
           ${(i.cves||[]).slice(0,2).map(c => `<span class="tag-chip" style="padding:2px 8px; margin:0; color:var(--signal); border-color:var(--signal);">${escapeHtml(c)}</span>`).join('')}
-          <span class="item-time">${timeAgo(i.fetched_at)}</span>
+          <span class="item-time" title="${escapeAttr(timeTitle(i))}">${escapeHtml(itemTimeLabel(i))}</span>
         </div>
         <div class="item-title"><a href="${safeHref(i.link)}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a></div>
         <div class="item-summary">${escapeHtml(truncateAtSentence(stripHtml(i.summary)))}</div>

@@ -1,5 +1,5 @@
 from pantomath.feeds.parser import domain_from_url, normalize_entry
-from pantomath.feeds.rss import fetch_raw
+from pantomath.feeds.rss import FeedFetchError, fetch_raw
 
 # NOTE: Scheduler is deliberately NOT re-exported here. It depends on
 # pantomath.connectors.registry, which depends on pantomath.connectors.rss,
@@ -9,4 +9,4 @@ from pantomath.feeds.rss import fetch_raw
 #     from pantomath.feeds.scheduler import Scheduler
 # (this is exactly what pantomath/app.py does).
 
-__all__ = ["fetch_raw", "normalize_entry", "domain_from_url"]
+__all__ = ["FeedFetchError", "fetch_raw", "normalize_entry", "domain_from_url"]

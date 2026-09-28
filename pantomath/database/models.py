@@ -112,4 +112,8 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("webhooks", "key_fail_count", "INTEGER DEFAULT 0"),
     ("webhooks", "key_locked_until", "REAL DEFAULT 0"),
     ("webhooks", "allow_insecure_tls", "INTEGER DEFAULT 0"),
+    # 0.6.0 — source health history for the Sources page and dashboard
+    ("sources", "last_success", "REAL DEFAULT 0"),
+    ("sources", "failing_since", "REAL DEFAULT 0"),
+    ("sources", "last_duration_ms", "INTEGER DEFAULT 0"),
 ]

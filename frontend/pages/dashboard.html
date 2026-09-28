@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pantomath // Threat Intel</title>
+<title>Pantomath</title>
 <link rel="icon" href="/static/assets/icons/pantomath.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/themes/pantomath.css?v={{CACHEBUST}}">
 <script>
@@ -16,109 +16,154 @@
 </head>
 <body>
 
-<header>
-  <div class="brand">
+<header class="topbar">
+  <button type="button" class="menu-btn" id="navToggle" aria-label="Open menu" aria-controls="navRail" aria-expanded="false">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="brand" href="#dashboard" data-goto="dashboard" aria-label="Pantomath dashboard">
     <div class="brand-mark"><span></span></div>
-    <div>
-      <h1>PANTOMATH</h1>
-      <div class="sub">Threat Intelligence Feed Aggregator</div>
+    <h1>PANTOMATH</h1>
+  </a>
+  <form class="global-search" id="globalSearchForm" role="search">
+    <label for="globalSearch" class="visually-hidden">Search intelligence</label>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="globalSearch" type="search" autocomplete="off" placeholder="Search a CVE, IP address, hash, email or keyword">
+    <kbd>/</kbd>
+  </form>
+  <div class="topbar-right">
+    <button type="button" class="health-pill" id="healthPill" data-goto="sources" hidden></button>
+    <div class="conn-status" id="connStatus" data-state="connecting">
+      <span class="conn-dot"></span><span class="conn-label" id="connLabel">Connecting</span><span class="conn-age" id="connAge"></span>
     </div>
-  </div>
-  <div class="status-cluster">
-    <div class="conn-label"><span class="live-dot" id="connDot"></span><span id="connLabel">Connecting</span></div>
-    <div class="status-item"><span class="val" id="statSources">0</span><span class="lbl">Sources</span></div>
-    <div class="status-item"><span class="val" id="statItems">0</span><span class="lbl">Items / 24h</span></div>
-    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark theme">&#9789;</button>
-    <button class="btn btn-primary" id="addSourceBtnHeader">+ Add Source</button>
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle light and dark theme">&#9789;</button>
+    <button class="btn btn-primary" id="addSourceBtnHeader">+ Add source</button>
   </div>
 </header>
 
 <div class="app-shell">
-  <nav class="nav-rail" id="navRail">
-    <button class="nav-item" data-view="dashboard"><span class="glyph icon-dashboard"></span>Dashboard</button>
-    <button class="nav-item" data-view="live-feed"><span class="glyph icon-live-feed"></span>Live Feed</button>
-    <button class="nav-item" data-view="critical"><span class="glyph icon-critical"></span>Critical</button>
-    <button class="nav-item" data-view="vulnerabilities"><span class="glyph icon-vulnerabilities"></span>Vulnerabilities</button>
-    <button class="nav-item" data-view="malware"><span class="glyph icon-malware"></span>Malware</button>
-    <button class="nav-item" data-view="ransomware"><span class="glyph icon-ransomware"></span>Ransomware</button>
-    <button class="nav-item" data-view="threat-actors"><span class="glyph icon-threat-actors"></span>Threat Actors</button>
-    <button class="nav-item" data-view="vendors"><span class="glyph icon-vendors"></span>Vendors</button>
-    <button class="nav-item" data-view="iocs"><span class="glyph icon-iocs"></span>IOCs</button>
-    <button class="nav-item" data-view="saved"><span class="glyph icon-saved"></span>Saved</button>
-    <div class="nav-divider"></div>
-    <button class="nav-item" data-view="sources"><span class="glyph icon-sources"></span>Sources</button>
-    <button class="nav-item" data-view="analytics"><span class="glyph icon-analytics"></span>Analytics</button>
-    <button class="nav-item" data-view="settings"><span class="glyph icon-settings"></span>Settings</button>
+  <nav class="nav-rail" id="navRail" aria-label="Main">
+    <div class="nav-group">
+      <div class="nav-group-label">Overview</div>
+      <button class="nav-item" data-view="dashboard"><span class="glyph icon-dashboard"></span><span class="nav-label">Dashboard</span></button>
+      <button class="nav-item" data-view="live-feed"><span class="glyph icon-live-feed"></span><span class="nav-label">Live feed</span><span class="nav-count" id="navNewCount" hidden></span></button>
+      <button class="nav-item" data-view="critical"><span class="glyph icon-critical"></span><span class="nav-label">High severity</span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">Investigate</div>
+      <button class="nav-item" data-view="iocs"><span class="glyph icon-iocs"></span><span class="nav-label">Indicators</span></button>
+      <button class="nav-item" data-view="vulnerabilities"><span class="glyph icon-vulnerabilities"></span><span class="nav-label">Vulnerabilities</span></button>
+      <button class="nav-item" data-view="malware"><span class="glyph icon-malware"></span><span class="nav-label">Malware</span></button>
+      <button class="nav-item" data-view="ransomware"><span class="glyph icon-ransomware"></span><span class="nav-label">Ransomware</span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">Intelligence</div>
+      <button class="nav-item" data-view="threat-actors"><span class="glyph icon-threat-actors"></span><span class="nav-label">Threat actors</span></button>
+      <button class="nav-item" data-view="vendors"><span class="glyph icon-vendors"></span><span class="nav-label">Vendors</span></button>
+      <button class="nav-item" data-view="sources"><span class="glyph icon-sources"></span><span class="nav-label">Sources</span><span class="nav-count" id="navSourcesCount" hidden></span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">Workspace</div>
+      <button class="nav-item" data-view="saved"><span class="glyph icon-saved"></span><span class="nav-label">Saved</span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">System</div>
+      <button class="nav-item" data-view="analytics"><span class="glyph icon-analytics"></span><span class="nav-label">Analytics</span></button>
+      <button class="nav-item" data-view="settings"><span class="glyph icon-settings"></span><span class="nav-label">Settings</span></button>
+    </div>
   </nav>
+  <div class="nav-scrim" id="navScrim" hidden></div>
 
   <div style="min-width:0;">
 
     <!-- DASHBOARD -->
     <section class="view" id="view-dashboard">
       <div class="view-head">
-        <div><h2>Dashboard</h2><div class="desc">Overview of everything Pantomath is tracking</div></div>
-      </div>
-      <div class="stat-grid" id="dashStats"></div>
-      <div class="panel-grid">
-        <div class="panel">
-          <h3>Articles — last 7 days</h3>
-          <div id="dashSparkline"></div>
-        </div>
-        <div class="panel">
-          <h3>Top vendors mentioned <span style="color:var(--text-faint); font-weight:400;">(7d)</span></h3>
-          <div id="dashVendors"></div>
+        <div><h2>Dashboard</h2><div class="desc" id="dashSubtitle">Counts use each item's published date.</div></div>
+        <div class="seg" role="group" aria-label="Time range" id="dashRange">
+          <button type="button" data-hours="24" aria-pressed="true">24 h</button>
+          <button type="button" data-hours="168" aria-pressed="false">7 d</button>
+          <button type="button" data-hours="720" aria-pressed="false">30 d</button>
+          <button type="button" data-hours="2160" aria-pressed="false">90 d</button>
         </div>
       </div>
-      <div class="panel-grid">
-        <div class="panel">
-          <h3>Severity distribution</h3>
-          <div id="dashSeverity"></div>
+      <div class="kpi-strip" id="dashKpis" aria-label="Summary"></div>
+      <div class="dash-grid">
+        <div class="dash-main">
+        <section class="card" aria-labelledby="attentionTitle">
+          <div class="card-head">
+            <div><h3 id="attentionTitle">Needs attention</h3><div class="card-sub" id="attentionSub">High severity, published in the last 24 hours</div></div>
+            <button type="button" class="link-btn" data-goto="critical">All high severity</button>
+          </div>
+          <ul class="attention-list" id="dashAttention"></ul>
+        </section>
+          <section class="card" aria-labelledby="daysTitle">
+            <div class="card-head">
+              <div><h3 id="daysTitle">Published per day</h3><div class="card-sub">Last 7 days, by severity</div></div>
+              <div class="legend" aria-hidden="true"><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
+            </div>
+            <div class="day-chart" id="dashDays"></div>
+          </section>
         </div>
-        <div class="panel">
-          <h3>Top sources</h3>
-          <div id="dashTopSources"></div>
+        <div class="dash-side">
+          <section class="card" aria-labelledby="healthTitle">
+            <div class="card-head">
+              <div><h3 id="healthTitle">Source health</h3><div class="card-sub" id="healthSub"></div></div>
+              <button type="button" class="link-btn" data-goto="sources">Manage sources</button>
+            </div>
+            <ul class="health-list" id="dashHealth"></ul>
+          </section>
         </div>
       </div>
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-        <h3 style="font-family:var(--font-display); font-size:14px;">Latest intelligence</h3>
-        <button class="btn" data-goto="live-feed">View all</button>
-      </div>
-      <div class="feed" id="dashLatest"></div>
     </section>
 
     <!-- LIVE FEED -->
     <section class="view" id="view-live-feed">
       <div class="view-head">
-        <div><h2>Live Feed</h2><div class="desc">Everything, unfiltered, newest first</div></div>
-      </div>
-      <div class="toolbar">
-        <div class="search-box">
-          <span style="color:var(--text-faint)">&#8981;</span>
-          <input type="text" id="searchInput" placeholder="Filter by keyword, CVE, actor...">
-        </div>
-        <div class="sev-toggles" id="sevToggles">
-          <button class="sev-toggle active" data-sev="high">High</button>
-          <button class="sev-toggle active" data-sev="medium">Medium</button>
-          <button class="sev-toggle active" data-sev="low">Low</button>
+        <div><h2>Live feed</h2><div class="desc" id="liveSubtitle">Everything Pantomath has collected, newest arrivals first.</div></div>
+        <div class="view-actions">
+          <div class="seg" role="group" aria-label="Row density" id="liveDensity">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+          <button type="button" class="btn" id="liveMarkAllRead">Mark all as read</button>
         </div>
       </div>
-      <div class="toolbar" style="margin-top:-8px;">
-        <div style="display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-dim);">
-          <span>From</span>
-          <input type="date" id="dateFrom" style="background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:6px 9px; color:var(--text); font-family:var(--font-mono); font-size:12px;">
-          <span>To</span>
-          <input type="date" id="dateTo" style="background:var(--bg-panel); border:1px solid var(--line); border-radius:6px; padding:6px 9px; color:var(--text); font-family:var(--font-mono); font-size:12px;">
-          <button class="btn" id="dateClearBtn" style="padding:6px 10px;">Clear</button>
-          <span id="dateRangeHint" style="color:var(--text-faint);"></span>
+      <div class="filter-bar">
+        <div class="filter-row">
+          <label for="searchInput" class="visually-hidden">Filter the feed</label>
+          <input type="search" class="text-input grow" id="searchInput" placeholder="Filter by keyword, CVE, vendor or actor">
+          <div class="sev-toggles" id="sevToggles" role="group" aria-label="Severity">
+            <button type="button" class="sev-toggle active" data-sev="high">High</button>
+            <button type="button" class="sev-toggle active" data-sev="medium">Medium</button>
+            <button type="button" class="sev-toggle active" data-sev="low">Low</button>
+          </div>
+        </div>
+        <div class="filter-row">
+          <label for="liveSource" class="visually-hidden">Source</label>
+          <select id="liveSource"><option value="">All sources</option></select>
+          <label for="liveCategory" class="visually-hidden">Category</label>
+          <select id="liveCategory"><option value="">All categories</option></select>
+          <label class="inline" for="dateFrom">From</label>
+          <input type="date" id="dateFrom">
+          <label class="inline" for="dateTo">To</label>
+          <input type="date" id="dateTo">
+          <button type="button" class="btn" id="dateClearBtn">Clear dates</button>
+          <span class="filter-hint" id="dateRangeHint"></span>
         </div>
       </div>
-      <div class="feed" id="liveFeed"></div>
-      <div class="pagination" id="liveFeedPagination"></div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="liveFeed" data-density="compact" role="list" aria-label="Feed items"></div>
+          <div class="pagination" id="liveFeedPagination"></div>
+          <p class="kbd-hints"><kbd>J</kbd> <kbd>K</kbd> next and previous, <kbd>O</kbd> open original, <kbd>S</kbd> save, <kbd>Esc</kbd> close details</p>
+        </div>
+        <aside class="detail-panel" id="liveDetail" aria-label="Item details" hidden></aside>
+      </div>
     </section>
 
     <!-- CATEGORY-FILTERED VIEWS (Critical / Vulnerabilities / Malware / Ransomware) -->
     <section class="view" id="view-critical">
-      <div class="view-head"><div><h2>Critical</h2><div class="desc">High-severity items from the last 24 hours</div></div></div>
+      <div class="view-head"><div><h2>High severity</h2><div class="desc">High-severity items from the last 24 hours</div></div></div>
       <div class="feed" id="feedCritical"></div>
     </section>
     <section class="view" id="view-vulnerabilities">
@@ -155,38 +200,49 @@
     <!-- IOCS -->
     <section class="view" id="view-iocs">
       <div class="view-head">
-        <div><h2>Indicators of Compromise</h2><div class="desc">Rule-based extraction of CVEs, IPs, hashes &amp; emails from stored articles — click one to see related coverage, or click a day on the calendar to see everything from that date</div></div>
+        <div><h2>Indicators</h2><div class="desc">Found in article text by pattern matching. Select indicators to copy or export them, or pick a day on the calendar to see only that day.</div></div>
       </div>
-      <div class="ioc-type-selector" id="iocTypeSelector">
-        <button class="ioc-type-btn active" data-ioc-type="cve">CVEs</button>
-        <button class="ioc-type-btn" data-ioc-type="ip">IP Addresses</button>
-        <button class="ioc-type-btn" data-ioc-type="hash">Hashes</button>
-        <button class="ioc-type-btn" data-ioc-type="email">Emails</button>
-      </div>
-      <div class="panel-grid">
-        <div class="panel">
-          <div class="ioc-calendar-head">
-            <h3>Activity calendar</h3>
-            <button class="btn" id="iocClearDateBtn" style="display:none;">Clear date &times;</button>
-          </div>
-          <div id="iocCalendar"></div>
+      <div class="ioc-toolbar">
+        <div class="seg ioc-type-selector" id="iocTypeSelector" role="group" aria-label="Indicator type">
+          <button type="button" class="ioc-type-btn active" data-ioc-type="cve">CVEs<span class="seg-count" id="iocCount-cve"></span></button>
+          <button type="button" class="ioc-type-btn" data-ioc-type="ip">IP addresses<span class="seg-count" id="iocCount-ip"></span></button>
+          <button type="button" class="ioc-type-btn" data-ioc-type="hash">Hashes<span class="seg-count" id="iocCount-hash"></span></button>
+          <button type="button" class="ioc-type-btn" data-ioc-type="email">Emails<span class="seg-count" id="iocCount-email"></span></button>
         </div>
-        <div class="panel">
-          <h3>IOC type distribution</h3>
-          <div id="iocDonutWrap"></div>
+        <label for="iocFilter" class="visually-hidden">Filter indicators</label>
+        <input type="search" class="text-input grow" id="iocFilter" placeholder="Filter CVEs">
+      </div>
+      <div class="ioc-actionbar" id="iocActionBar">
+        <span id="iocSelectedCount">Nothing selected. Actions apply to every indicator in the list.</span>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="iocCopyBtn">Copy all</button>
+        <button type="button" class="btn" id="iocCsvBtn">Export CSV</button>
+        <button type="button" class="btn btn-primary" id="iocListBtn">Download list (.txt)</button>
+      </div>
+      <div class="ioc-layout">
+        <div class="ioc-main">
+          <section class="card">
+            <div class="card-head"><div><h3 id="iocChartTitle">CVEs</h3><div class="card-sub" id="iocTableSub">Most mentioned first</div></div></div>
+            <div class="ioc-table" id="iocTopChart" role="table" aria-labelledby="iocChartTitle"></div>
+            <div class="pagination" id="iocTopChartPagination"></div>
+          </section>
+          <section class="card" id="iocArticlesPanel" style="display:none;">
+            <div class="card-head"><div><h3 id="iocArticlesTitle">Articles</h3><div class="card-sub" id="iocAlongside"></div></div></div>
+            <table class="sources-table ioc-articles">
+              <thead><tr><th>Severity</th><th>Title</th><th>Source</th><th>Published</th></tr></thead>
+              <tbody id="iocArticlesBody"></tbody>
+            </table>
+          </section>
         </div>
-      </div>
-      <div class="panel">
-        <h3 id="iocChartTitle">Top CVEs mentioned</h3>
-        <div id="iocTopChart"></div>
-        <div class="pagination" id="iocTopChartPagination"></div>
-      </div>
-      <div class="panel" id="iocArticlesPanel" style="display:none;">
-        <h3 id="iocArticlesTitle">Articles containing —</h3>
-        <table class="sources-table">
-          <thead><tr><th>Source</th><th>Title</th><th>Date</th><th></th></tr></thead>
-          <tbody id="iocArticlesBody"></tbody>
-        </table>
+        <div class="ioc-side">
+          <section class="card">
+            <div class="card-head ioc-calendar-head">
+              <div><h3>Activity calendar</h3><div class="card-sub">Days on which new indicators appeared</div></div>
+              <button type="button" class="btn btn-sm" id="iocClearDateBtn" style="display:none;">Clear date &times;</button>
+            </div>
+            <div class="ioc-cal-body"><div id="iocCalendar"></div></div>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -199,34 +255,71 @@
     <!-- SOURCES -->
     <section class="view" id="view-sources">
       <div class="view-head">
-        <div><h2>Sources</h2><div class="desc">Add, pause, or remove RSS/Atom feeds</div></div>
-        <div style="display:flex; gap:8px;">
+        <div><h2>Sources</h2><div class="desc">Your RSS and Atom feeds, and how each one is doing.</div></div>
+        <div class="view-actions">
           <button class="btn" id="refreshAllBtn">Refresh all now</button>
           <button class="btn" id="exportSourcesBtn">Export</button>
           <button class="btn" id="importSourcesBtn">Import</button>
           <input type="file" id="importSourcesFile" accept="application/json" style="display:none;">
-          <button class="btn btn-primary" id="addSourceBtnSources">+ Add Source</button>
-          <button class="btn" id="lockSourcesBtn" title="Re-lock Settings &amp; Sources">&#128274; Lock</button>
+          <button class="btn" id="lockSourcesBtn" title="Lock Settings and Sources again">&#128274; Lock</button>
+          <button class="btn btn-primary" id="addSourceBtnSources">+ Add source</button>
         </div>
       </div>
-      <table class="sources-table">
-        <thead><tr><th>Source</th><th>Category</th><th>Status</th><th>Interval</th><th>Last polled</th><th></th></tr></thead>
-        <tbody id="sourcesTableBody"></tbody>
-      </table>
+      <div class="kpi-strip kpi-strip-4" id="sourcesSummary" aria-label="Source health summary"></div>
+      <section class="card">
+        <div class="src-table" id="sourcesTableBody" role="table" aria-label="Sources"></div>
+      </section>
     </section>
 
     <!-- ANALYTICS -->
     <section class="view" id="view-analytics">
-      <div class="view-head"><div><h2>Analytics</h2><div class="desc">Aggregate trends across all stored intelligence</div></div></div>
-      <div class="panel-grid">
-        <div class="panel"><h3>Articles — last 7 days</h3><div id="anSparkline"></div></div>
-        <div class="panel"><h3>Severity distribution</h3><div id="anSeverity"></div></div>
+      <div class="view-head">
+        <div><h2>Analytics</h2><div class="desc" id="anSubtitle">Trends by published date.</div></div>
+        <div class="seg" role="group" aria-label="Time range" id="anRange">
+          <button type="button" data-days="7" aria-pressed="false">7 d</button>
+          <button type="button" data-days="30" aria-pressed="true">30 d</button>
+          <button type="button" data-days="90" aria-pressed="false">90 d</button>
+          <button type="button" data-days="365" aria-pressed="false">12 months</button>
+        </div>
       </div>
-      <div class="panel-grid">
-        <div class="panel"><h3>Category distribution</h3><div id="anCategory"></div></div>
-        <div class="panel"><h3>Top sources (all time)</h3><div id="anTopSources"></div></div>
+      <div class="kpi-strip kpi-strip-4" id="anKpis" aria-label="Summary"></div>
+      <div class="an-grid">
+        <section class="card an-wide" aria-labelledby="anVolumeTitle">
+          <div class="card-head">
+            <div><h3 id="anVolumeTitle">Published per day</h3><div class="card-sub">Stacked by severity</div></div>
+            <div class="legend" aria-hidden="true"><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
+          </div>
+          <div class="an-body an-volume" id="anVolume"></div>
+        </section>
+        <section class="card" aria-labelledby="anMixTitle">
+          <div class="card-head"><div><h3 id="anMixTitle">Severity mix</h3><div class="card-sub" id="anMixSub">Compared with the previous period</div></div></div>
+          <div class="an-body" id="anSeverity"></div>
+        </section>
+        <section class="card" aria-labelledby="anSourcesTitle">
+          <div class="card-head"><div><h3 id="anSourcesTitle">Top sources</h3><div class="card-sub">Items published in this period</div></div></div>
+          <div class="an-body" id="anTopSources"></div>
+        </section>
+        <section class="card an-wide" aria-labelledby="anHeatTitle">
+          <div class="card-head"><div><h3 id="anHeatTitle">When items are published</h3><div class="card-sub">Weekday by hour, in the server's time zone</div></div></div>
+          <div class="an-body" id="anHeatmap"></div>
+        </section>
+        <section class="card" aria-labelledby="anVendorsTitle">
+          <div class="card-head"><div><h3 id="anVendorsTitle">Most mentioned vendors</h3></div></div>
+          <div class="an-body" id="anVendors"></div>
+        </section>
+        <section class="card" aria-labelledby="anActorsTitle">
+          <div class="card-head"><div><h3 id="anActorsTitle">Most mentioned threat actors</h3></div></div>
+          <div class="an-body" id="anActors"></div>
+        </section>
+        <section class="card" aria-labelledby="anCategoryTitle">
+          <div class="card-head"><div><h3 id="anCategoryTitle">Categories</h3><div class="card-sub">By the category of the source</div></div></div>
+          <div class="an-body" id="anCategory"></div>
+        </section>
+        <section class="card" aria-labelledby="anIndicatorsTitle">
+          <div class="card-head"><div><h3 id="anIndicatorsTitle">Indicators found</h3><div class="card-sub">Distinct values in this period</div></div></div>
+          <div class="an-body" id="anIndicators"></div>
+        </section>
       </div>
-      <div class="panel"><h3>Top vendors mentioned (7d)</h3><div id="anVendors"></div></div>
     </section>
 
     <!-- SETTINGS -->
@@ -344,8 +437,13 @@
       <input type="text" id="srcName" placeholder="e.g. SANS ISC">
     </div>
     <div class="field">
-      <label>RSS/Atom URL</label>
+      <label for="srcUrl">RSS/Atom URL</label>
       <input type="text" id="srcUrl" placeholder="https://example.com/feed.xml">
+      <div class="feed-test-row">
+        <button type="button" class="btn btn-sm" id="testFeedBtn">Test feed</button>
+        <span class="hint">Checks the URL without saving anything.</span>
+      </div>
+      <div class="feed-test" id="feedTestResult" role="status" hidden></div>
     </div>
     <div class="field">
       <label>Category</label>

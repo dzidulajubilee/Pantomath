@@ -2,6 +2,7 @@
 Normalizes a feedparser entry (whose shape varies a lot between publishers)
 into the flat dict shape the rest of the app expects.
 """
+import calendar
 import hashlib
 import time
 
@@ -12,7 +13,7 @@ def normalize_entry(entry) -> dict:
     ).hexdigest()
 
     published_struct = entry.get("published_parsed") or entry.get("updated_parsed")
-    published_ts = time.mktime(published_struct) if published_struct else time.time()
+    published_ts = calendar.timegm(published_struct) if published_struct else time.time()
 
     summary = entry.get("summary", "") or entry.get("description", "")
 

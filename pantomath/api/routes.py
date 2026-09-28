@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import time
 import uuid
 
@@ -17,11 +18,13 @@ from pantomath.database.restore import (
     validate_sqlite_backup,
 )
 from pantomath.database.sqlite import DB_PATH, get_db, init_db
+from pantomath.feeds.rss import FETCH_HARD_LIMIT, FeedFetchError, fetch_raw
 from pantomath.intelligence.enrichment import (
     derive_icon_url,
     fetch_and_cache_icon_sync,
     invalidate_icon_cache,
 )
+from pantomath.intelligence.ioc_extraction import CVE_PATTERN
 from pantomath.intelligence.reprocessor import reprocess_items
 
 router = APIRouter()
@@ -211,8 +214,68 @@ async def list_sources():
     db = await get_db()
     cur = await db.execute("SELECT * FROM sources ORDER BY name")
     rows = [dict(r) for r in await cur.fetchall()]
+    # items_today / items_total for the Sources page (by when Pantomath
+    # stored them: "did this feed deliver anything today?").
+    local = time.localtime()
+    today_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+    cur = await db.execute(
+        """SELECT source_id, COUNT(*) AS total, SUM(CASE WHEN fetched_at >= ? THEN 1 ELSE 0 END) AS today
+           FROM items GROUP BY source_id""",
+        (today_start,),
+    )
+    counts = {r["source_id"]: (r["total"], r["today"] or 0) for r in await cur.fetchall()}
     await db.close()
+    for row in rows:
+        row["items_total"], row["items_today"] = counts.get(row["id"], (0, 0))
     return rows
+
+
+class FeedTestIn(BaseModel):
+    url: str
+
+
+_FEED_FORMATS = {"rss20": "RSS 2.0", "rss10": "RSS 1.0", "rss092": "RSS 0.92", "rss091u": "RSS 0.91",
+                 "rss091n": "RSS 0.91", "rss090": "RSS 0.90", "atom10": "Atom 1.0", "atom03": "Atom 0.3"}
+
+
+@protected_router.post("/api/sources/test")
+async def test_source(body: FeedTestIn):
+    """
+    Try a feed URL without saving anything, so the Add/Edit source form
+    can say "valid RSS 2.0 feed, 16 items" or show exactly why it isn't
+    (HTTP 404, a web page, no response...) before a broken source is
+    saved. Same fetcher, limits and error messages as the scheduler.
+    Protected like adding a source: it makes the server fetch a URL.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        feed = await asyncio.wait_for(
+            loop.run_in_executor(None, fetch_raw, body.url.strip()), timeout=FETCH_HARD_LIMIT
+        )
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"no response within {FETCH_HARD_LIMIT}s"}
+    except FeedFetchError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # anything unexpected is still a failed test, not a 500
+        return {"ok": False, "error": str(e)[:200] or e.__class__.__name__}
+
+    newest = 0.0
+    with_cve = 0
+    for entry in feed.entries:
+        parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+        if parsed:
+            newest = max(newest, calendar.timegm(parsed))
+        if CVE_PATTERN.search(f"{entry.get('title', '')} {entry.get('summary', '')}"):
+            with_cve += 1
+    version = feed.get("version") or ""
+    return {
+        "ok": True,
+        "format": _FEED_FORMATS.get(version, version or "feed"),
+        "title": feed.feed.get("title", ""),
+        "items": len(feed.entries),
+        "newest_published": newest or None,
+        "items_with_cve": with_cve,
+    }
 
 
 @protected_router.post("/api/sources")
@@ -445,7 +508,10 @@ async def list_items(
     )
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
-    q += " ORDER BY items.fetched_at DESC LIMIT ? OFFSET ?"
+    # Newest arrivals first; within one poll (items stored in the same
+    # minute) newest *published* first, so a feed's batch reads in order
+    # instead of in whatever order the publisher listed it.
+    q += f" ORDER BY CAST(items.fetched_at / 60 AS INTEGER) DESC, {_EFFECTIVE_TS_ITEMS} DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
     cur = await db.execute(q, params)
     rows = [_row_to_item(dict(r)) for r in await cur.fetchall()]
@@ -562,6 +628,31 @@ def _comma_column_counts_query(column: str, extra_where: str = "") -> str:
     """
 
 
+def _ioc_detail_query(column: str, extra_where: str = "", tag_filter: str = "") -> str:
+    """
+    Like _comma_column_counts_query, but carries each item's severity,
+    fetch time and source through the split, so every distinct value
+    also gets: number of sources, worst severity, first and last seen.
+    """
+    where = f"{column} != ''" + (f" AND {extra_where}" if extra_where else "")
+    return f"""
+        WITH RECURSIVE
+          base AS (SELECT {column} || ',' AS rest, severity, fetched_at, source_id FROM items WHERE {where}),
+          split(tag, rest, severity, fetched_at, source_id) AS (
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1),
+                   severity, fetched_at, source_id FROM base
+            UNION ALL
+            SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1),
+                   severity, fetched_at, source_id FROM split WHERE rest != ''
+          )
+        SELECT tag AS name, COUNT(*) AS count, COUNT(DISTINCT source_id) AS sources,
+               MAX(CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) AS severity_rank,
+               MIN(fetched_at) AS first_seen, MAX(fetched_at) AS last_seen
+        FROM split WHERE tag != ''{tag_filter}
+        GROUP BY tag
+    """
+
+
 @router.get("/api/tags")
 async def list_tags(type: str = "vendor", limit: int = 20):
     """Distinct vendor/threat-actor tags with counts, for chip filters and the Vendors/Threat Actors pages."""
@@ -581,6 +672,7 @@ _IOC_COLUMNS = {"cve": "cves", "ip": "ips", "hash": "hashes", "email": "emails"}
 async def list_iocs(
     type: str = "cve", limit: int = 20, offset: int = 0,
     date_from: str | None = None, date_to: str | None = None,
+    detail: bool = False, q: str | None = None,
 ):
     """
     Distinct IOCs of one type with occurrence counts, paginated —
@@ -603,9 +695,28 @@ async def list_iocs(
         raise HTTPException(400, f"Unknown IOC type '{type}'. Use one of: {', '.join(_IOC_COLUMNS)}.")
     date_where, date_params = _date_range_where(date_from, date_to)
     db = await get_db()
-    query = _comma_column_counts_query(col, extra_where=date_where) + " ORDER BY count DESC, name ASC LIMIT ? OFFSET ?"
-    cur = await db.execute(query, (*date_params, limit, offset))
-    rows = [dict(r) for r in await cur.fetchall()]
+    if not detail:
+        query = _comma_column_counts_query(col, extra_where=date_where) + " ORDER BY count DESC, name ASC LIMIT ? OFFSET ?"
+        cur = await db.execute(query, (*date_params, limit, offset))
+        rows = [dict(r) for r in await cur.fetchall()]
+        await db.close()
+        return rows
+
+    # detail=1 (Indicators table, 0.6.0): same ranking, plus how many
+    # sources mentioned each value, the worst severity it appeared with,
+    # and when Pantomath first/last saw it. `q` narrows by substring.
+    # Opt-in so the plain {name, count} shape stays exactly as it was.
+    tag_filter, q_params = "", ()
+    if q and q.strip():
+        tag_filter, q_params = " AND instr(lower(tag), lower(?)) > 0", (q.strip(),)
+    query = _ioc_detail_query(col, extra_where=date_where, tag_filter=tag_filter) + " ORDER BY count DESC, name ASC LIMIT ? OFFSET ?"
+    cur = await db.execute(query, (*date_params, *q_params, limit, offset))
+    ranks = {3: "high", 2: "medium", 1: "low"}
+    rows = []
+    for r in await cur.fetchall():
+        row = dict(r)
+        row["severity"] = ranks.get(row.pop("severity_rank"), "low")
+        rows.append(row)
     await db.close()
     return rows
 
@@ -731,6 +842,237 @@ async def get_stats():
         "articles_by_day": day_buckets,
     }
 
+
+
+# "When was this published", for anything the dashboard counts or sorts.
+# The feed's own date, unless it claims to be later than when Pantomath
+# fetched it (a wrong clock or timezone on the publisher's side — allowed
+# an hour of slack), in which case the fetch time is the honest answer.
+# Counting by fetch time instead (what /api/stats does) makes a newly
+# added source's whole backlog look like it all happened "today".
+_EFFECTIVE_TS = "(CASE WHEN published > 0 AND published <= fetched_at + 3600 THEN published ELSE fetched_at END)"
+_EFFECTIVE_TS_ITEMS = _EFFECTIVE_TS.replace("published", "items.published").replace("fetched_at", "items.fetched_at")
+
+_SOURCE_STATE_ORDER = {"failing": 0, "pending": 1, "healthy": 2, "paused": 3}
+
+
+def _source_health(row: dict) -> dict:
+    """
+    Public, read-only view of one source for the dashboard and the header
+    status indicator. Deliberately excludes the URL: feed URLs sometimes
+    carry an API key or token, and this is served without a login.
+    """
+    status = row.get("last_status") or ""
+    if not row.get("enabled"):
+        state, error = "paused", ""
+    elif status == "ok":
+        state, error = "healthy", ""
+    elif status.startswith("error"):
+        state, error = "failing", status.split(":", 1)[1].strip() if ":" in status else status
+    else:
+        state, error = "pending", ""
+    return {
+        "id": row["id"], "name": row["name"], "category": row["category"], "state": state,
+        "error": error, "last_fetched": row.get("last_fetched"),
+        "last_success": row.get("last_success") or None, "failing_since": row.get("failing_since") or None,
+    }
+
+
+@router.get("/api/overview")
+async def get_overview(hours: int = 24, since: float | None = None):
+    """
+    Everything the dashboard and the header's status indicators need, in
+    one public call. Additive on purpose: /api/stats keeps its exact
+    shape and fetch-time semantics for anything already relying on it.
+
+    - `hours` (1 to 2160, default 24): window for the high-severity count
+      and the "needs attention" list, by published date.
+    - `since` (unix seconds): "new since you last looked" counts items
+      Pantomath *stored* after this moment — that question is about what
+      the viewer hasn't seen, not about publication dates. Defaults to 24h
+      ago; ignored if it's in the future.
+    """
+    hours = max(1, min(hours, 24 * 90))
+    now = time.time()
+    window_start = now - hours * 3600
+    if since is None or since <= 0 or since > now:
+        since = now - 86400
+    local = time.localtime(now)
+    today_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+    week_start = today_start - 6 * 86400  # today plus the six days before it
+
+    db = await get_db()
+    try:
+        async def scalar(query, params=()):
+            cur = await db.execute(query, params)
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+        high_in_window = await scalar(
+            f"SELECT COUNT(*) FROM items WHERE severity = 'high' AND {_EFFECTIVE_TS} > ?", (window_start,)
+        )
+        published_today = await scalar(f"SELECT COUNT(*) FROM items WHERE {_EFFECTIVE_TS} >= ?", (today_start,))
+        published_week = await scalar(f"SELECT COUNT(*) FROM items WHERE {_EFFECTIVE_TS} >= ?", (week_start,))
+        new_since = await scalar("SELECT COUNT(*) FROM items WHERE fetched_at > ?", (since,))
+
+        indicators_week = {}
+        for column, key in (("cves", "cve"), ("ips", "ip"), ("hashes", "hash"), ("emails", "email")):
+            inner = _comma_column_counts_query(column, extra_where=f"{_EFFECTIVE_TS} >= ?")
+            indicators_week[key] = await scalar(f"SELECT COUNT(*) FROM ({inner})", (week_start,))
+
+        cur = await db.execute(
+            f"""SELECT items.*, sources.name AS source_name, sources.color AS source_color,
+                       sources.icon_url AS source_icon, sources.category AS category
+                FROM items JOIN sources ON items.source_id = sources.id
+                WHERE items.severity = 'high' AND {_EFFECTIVE_TS_ITEMS} > ?
+                ORDER BY {_EFFECTIVE_TS_ITEMS} DESC LIMIT 8""",
+            (window_start,),
+        )
+        attention = [_row_to_item(dict(r)) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            f"""SELECT strftime('%Y-%m-%d', {_EFFECTIVE_TS}, 'unixepoch', 'localtime') AS day,
+                       severity, COUNT(*) AS c
+                FROM items WHERE {_EFFECTIVE_TS} >= ? GROUP BY day, severity""",
+            (week_start,),
+        )
+        buckets: dict[str, dict[str, int]] = {}
+        for r in await cur.fetchall():
+            buckets.setdefault(r["day"], {})[r["severity"]] = r["c"]
+        by_day = []
+        for offset in range(6, -1, -1):
+            day = time.strftime("%Y-%m-%d", time.localtime(today_start - offset * 86400 + 43200))
+            counts = buckets.get(day, {})
+            by_day.append({"date": day, **{s: counts.get(s, 0) for s in ("high", "medium", "low")}})
+
+        cur = await db.execute(
+            "SELECT id, name, category, enabled, last_status, last_fetched, last_success, failing_since FROM sources"
+        )
+        health = [_source_health(dict(r)) for r in await cur.fetchall()]
+        health.sort(key=lambda h: (_SOURCE_STATE_ORDER[h["state"]], h["name"].lower()))
+    finally:
+        await db.close()
+
+    count = {state: sum(1 for h in health if h["state"] == state) for state in _SOURCE_STATE_ORDER}
+    return {
+        "generated_at": now,
+        "hours": hours,
+        "since": since,
+        "high_in_window": high_in_window,
+        "new_since": new_since,
+        "published_today": published_today,
+        "published_week": published_week,
+        "indicators_week": indicators_week,
+        "attention": attention,
+        "by_day": by_day,
+        "sources": {"total": len(health), **count, "list": health},
+    }
+
+
+@router.get("/api/analytics")
+async def get_analytics(days: int = 30):
+    """
+    Everything the Analytics page shows, by published date (the same
+    _EFFECTIVE_TS rule as the dashboard), for the last `days` days
+    (1 to 365, default 30) including today. Also returns the previous
+    period of the same length, so the page can show change, and a
+    weekday x hour matrix of when items get published (server local
+    time). Public, like the rest of the dashboard.
+    """
+    days = max(1, min(days, 365))
+    now = time.time()
+    local = time.localtime(now)
+    today_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+    start = today_start - (days - 1) * 86400
+    prev_start = start - days * 86400
+
+    db = await get_db()
+    try:
+        async def severity_counts(lo, hi):
+            cur = await db.execute(
+                f"SELECT severity, COUNT(*) AS c FROM items WHERE {_EFFECTIVE_TS} >= ? AND {_EFFECTIVE_TS} < ? GROUP BY severity",
+                (lo, hi),
+            )
+            counts = {r["severity"]: r["c"] for r in await cur.fetchall()}
+            return {sev: counts.get(sev, 0) for sev in ("high", "medium", "low")}
+
+        current = await severity_counts(start, now + 86400)
+        previous = await severity_counts(prev_start, start)
+
+        cur = await db.execute(
+            f"""SELECT strftime('%Y-%m-%d', {_EFFECTIVE_TS}, 'unixepoch', 'localtime') AS day, severity, COUNT(*) AS c
+                FROM items WHERE {_EFFECTIVE_TS} >= ? GROUP BY day, severity""",
+            (start,),
+        )
+        buckets: dict[str, dict[str, int]] = {}
+        for r in await cur.fetchall():
+            buckets.setdefault(r["day"], {})[r["severity"]] = r["c"]
+        by_day = []
+        for offset in range(days - 1, -1, -1):
+            day = time.strftime("%Y-%m-%d", time.localtime(today_start - offset * 86400 + 43200))
+            counts = buckets.get(day, {})
+            by_day.append({"date": day, **{sev: counts.get(sev, 0) for sev in ("high", "medium", "low")}})
+
+        cur = await db.execute(
+            f"""SELECT sources.category AS name, COUNT(*) AS count FROM items JOIN sources ON items.source_id = sources.id
+                WHERE {_EFFECTIVE_TS_ITEMS} >= ? GROUP BY sources.category ORDER BY count DESC""",
+            (start,),
+        )
+        by_category = [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            f"""SELECT sources.name AS name, COUNT(*) AS count,
+                       SUM(CASE WHEN items.severity = 'high' THEN 1 ELSE 0 END) AS high
+                FROM items JOIN sources ON items.source_id = sources.id
+                WHERE {_EFFECTIVE_TS_ITEMS} >= ? GROUP BY sources.id ORDER BY count DESC, name ASC LIMIT 8""",
+            (start,),
+        )
+        top_sources = [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(f"SELECT COUNT(DISTINCT source_id) FROM items WHERE {_EFFECTIVE_TS} >= ?", (start,))
+        active_sources = (await cur.fetchone())[0]
+
+        async def top_tags(column):
+            query = _comma_column_counts_query(column, extra_where=f"{_EFFECTIVE_TS} >= ?") + " ORDER BY count DESC, name ASC LIMIT 8"
+            cur = await db.execute(query, (start,))
+            return [dict(r) for r in await cur.fetchall()]
+
+        top_vendors = await top_tags("vendors")
+        top_actors = await top_tags("actors")
+
+        indicators = {}
+        for column, key in (("cves", "cve"), ("ips", "ip"), ("hashes", "hash"), ("emails", "email")):
+            inner = _comma_column_counts_query(column, extra_where=f"{_EFFECTIVE_TS} >= ?")
+            cur = await db.execute(f"SELECT COUNT(*) FROM ({inner})", (start,))
+            indicators[key] = (await cur.fetchone())[0]
+
+        cur = await db.execute(
+            f"""SELECT CAST(strftime('%w', {_EFFECTIVE_TS}, 'unixepoch', 'localtime') AS INTEGER) AS wd,
+                       CAST(strftime('%H', {_EFFECTIVE_TS}, 'unixepoch', 'localtime') AS INTEGER) AS hr, COUNT(*) AS c
+                FROM items WHERE {_EFFECTIVE_TS} >= ? GROUP BY wd, hr""",
+            (start,),
+        )
+        heatmap = [[0] * 24 for _ in range(7)]  # [weekday 0=Sunday][hour]
+        for r in await cur.fetchall():
+            heatmap[r["wd"]][r["hr"]] = r["c"]
+    finally:
+        await db.close()
+
+    return {
+        "days": days,
+        "start": start,
+        "generated_at": now,
+        "totals": {**current, "items": sum(current.values())},
+        "previous": {**previous, "items": sum(previous.values())},
+        "active_sources": active_sources,
+        "indicators": indicators,
+        "by_day": by_day,
+        "by_category": by_category,
+        "top_sources": top_sources,
+        "top_vendors": top_vendors,
+        "top_actors": top_actors,
+        "heatmap": heatmap,
+    }
 
 @protected_router.get("/api/backup")
 async def backup_database():

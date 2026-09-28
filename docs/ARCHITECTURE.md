@@ -53,8 +53,9 @@ Pantomath/
    which looks up the class for that source's `connector_type` and calls
    its `update()` — the fetch → normalize → validate → store cycle defined
    by `BaseConnector`. The scheduler itself has no RSS-specific code.
-3. `RSSConnector.fetch()` calls `pantomath/feeds/rss.py` (`feedparser`, run in
-   a thread pool since it's blocking); `.normalize()` calls
+3. `RSSConnector.fetch()` calls `pantomath/feeds/rss.py` (urllib fetch with
+   timeouts, then `feedparser` as the parser, run in a thread pool since it's
+   blocking — see "Feed fetching" below); `.normalize()` calls
    `pantomath/feeds/parser.py` to shape entries into the common item dict;
    `.store()` scores severity (`pantomath/intelligence/scoring.py`) and
    writes to SQLite.
@@ -63,6 +64,98 @@ Pantomath/
 5. On page load, `GET /api/items` returns whatever's cached — no live
    fetching happens on the request path, so page load stays fast regardless
    of source count or feed size.
+
+## Feed fetching: timeouts and honest status
+
+`pantomath/feeds/rss.py` downloads the feed itself with urllib and only
+then hands the bytes to feedparser as a parser. Handing the URL straight
+to `feedparser.parse()` (the original approach) caused two real problems:
+
+- **Broken feeds showed as healthy.** feedparser never raises — a 404, a
+  DNS failure, a refused connection or an HTML page all come back as zero
+  entries with a `bozo` flag, and the scheduler recorded `last_status =
+  'ok'`. A dead feed was indistinguishable from a quiet one.
+- **No timeout.** feedparser opens URLs with no socket timeout, and the
+  scheduler polls sources one after another, so a single server that
+  accepted the connection and never answered stalled polling of *every*
+  source indefinitely.
+
+Now: a 15s per-read timeout, a 45s whole-download deadline (read via
+`read1()`, so a server dripping one byte at a time can't dodge it), a
+10 MB size cap that also applies after gzip/deflate decompression, and an
+`asyncio.wait_for` backstop in `RSSConnector.fetch()` for the one thing
+urllib can't bound (DNS resolution). Any failure raises `FeedFetchError`
+with a short reason ("HTTP 404 Not Found", "could not resolve the host
+name", "URL returned a web page, not an RSS/Atom feed") which the
+scheduler stores as `error: <reason>` and the Sources table shows as-is.
+A feed that is valid but currently empty is still `ok`. Only `http://`
+and `https://` URLs are fetched — `feedparser.parse()` would also read a
+local file path. feedparser's own User-Agent and Accept header are still
+sent, so publishers see exactly what they saw before.
+
+Verified against a real local HTTP server in `tests/test_feed_fetch.py`
+(404, HTML page, refused connection, hang, slow drip, oversize, gzip,
+redirect, relative links), including a scheduler-level test that a hanging
+source no longer stops a healthy one from being polled — and confirmed
+those tests fail against the pre-fix code.
+
+## Dashboard, header status and "published" time (0.5.0)
+
+The dashboard and the header's status indicators read one public endpoint,
+`GET /api/overview?hours=&since=`, added alongside `/api/stats` (which is
+unchanged, so nothing depending on it breaks). Three rules matter:
+
+- **Counts follow the published date**, not the fetch time. Counting by
+  fetch time made a newly added source's two-week backlog show up as
+  "new today" and "critical in the last 24 hours". The effective time is
+  the feed's own date unless it is more than an hour later than the fetch
+  (a publisher's wrong clock), in which case the fetch time is used —
+  `_EFFECTIVE_TS` in `api/routes.py`, mirrored by `effectiveTs()` in
+  `frontend/widgets/feed-list.js`. Published dates are parsed with
+  `calendar.timegm` (feedparser's parsed dates are UTC; `time.mktime`
+  shifted them by the server's UTC offset).
+- **"New since you last looked" follows the fetch time**, because it is
+  about what the viewer hasn't seen. The browser records when it last
+  left Pantomath (`localStorage`) and passes it as `since`.
+- **No feed URLs in the response.** The endpoint is public like the rest
+  of the dashboard, and a feed URL can carry an API key, so source health
+  exposes only name, category, state and the last error message.
+
+The header's old "Sources" and "Items / 24h" counters are gone: one needed
+a Settings login to show anything and the other was never updated. In
+their place, a "N sources failing" indicator and a connection state that
+switches to **Not updating** when no data has arrived for two minutes, so
+an unattended wall display that has frozen doesn't look like a quiet day.
+
+Global search in the header recognises an exact CVE, IP address, hash or
+email and opens its indicator drill-down; anything else becomes a Live
+feed keyword filter. On screens narrower than 900px the sidebar becomes a
+drawer. UI text is IBM Plex Sans (bundled, like the other fonts); IBM Plex
+Mono stays for indicators. Severity is always shown as colour + label +
+shape (triangle high, diamond medium, ring low), never colour alone.
+
+## Sources, Indicators and Analytics (0.6.0)
+
+- **Source health history.** `sources` gained `last_success`,
+  `failing_since` and `last_duration_ms` (added through `MIGRATIONS`, so
+  existing databases upgrade in place). `last_fetched` alone could not say
+  when a failing feed last worked, because it updates on failures too.
+  `failing_since` is set on the first failure and kept until a success.
+- **Feed test.** `POST /api/sources/test` (Settings password required, since
+  it makes the server fetch a URL) runs the scheduler's own `fetch_raw`
+  with the same limits and error messages, and saves nothing. The Add/Edit
+  form runs it before saving; if it fails, the button becomes "Save anyway".
+- **Indicator detail.** `GET /api/iocs?detail=1&q=` adds sources, highest
+  severity and first/last seen to each value. It is opt-in, so the plain
+  `{name, count}` response stays exactly as it was.
+- **Analytics.** `GET /api/analytics?days=` (public) counts by published date
+  like the dashboard, and returns the previous period of the same length and
+  a weekday-by-hour publishing matrix.
+- **List order.** `/api/items` orders by arrival minute, then by published
+  date, so a feed's batch reads newest-first instead of in the order the
+  publisher happened to list it.
+- **Read state** is per browser (`localStorage`): an item is new if it
+  arrived after the later of "last left Pantomath" and "Mark all as read".
 
 ## Extensibility: the connector contract
 
@@ -470,7 +563,14 @@ different pre-filtered `/api/items` query — one card renderer, many views.
 
 `pantomath/intelligence/tagging.py` does rule-based keyword/pattern
 matching against curated vendor and threat-actor name lists (plus a regex
-for APT/UNC/FIN/TA-style actor codenames). This is deliberately simple —
+for APT/UNC/FIN/TA-style actor codenames). Names match as whole words,
+not substrings — substring matching (the original approach) tagged
+"threat intelligence" as Intel, "PHP" as HP, "ASAP" as SAP, "continue" as
+Conti, "display" as Play, and any hash containing "f5" as F5. Names that
+are also everyday words (Play, Oracle, Intel, Meta, Zoom, Apple, Chrome,
+Juniper) additionally require their real capitalization, and "Threat
+Intel" is explicitly excluded from Intel. Items stored before this fix
+keep their old tags until you run **Reprocess all** in Settings. This is deliberately simple —
 no NLP, no LLM call, no external dependency — and is applied once, at
 store time, so it costs nothing on every page load. It's the file to
 replace if you want smarter extraction later; nothing else references it

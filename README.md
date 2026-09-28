@@ -1,13 +1,76 @@
 # Pantomath
 
-A local, self-hosted threat intelligence dashboard. It polls RSS/Atom feeds
-from your threat intel sources and streams new items into a live dashboard
-in real time — Dashboard overview, Live Feed, Critical, Vulnerabilities,
-Malware, Ransomware, Threat Actors, Vendors, Saved, Sources, Analytics, and
-Settings. **Ships with zero pre-loaded sources**, so a fresh install shows
-exactly what you configure.
+A lightweight, self-hosted threat intelligence dashboard. Pantomath polls the
+RSS and Atom feeds you choose, scores each item's severity, pulls out CVEs,
+IP addresses, hashes and emails, tags vendors and threat actors, and shows it
+all in one browser dashboard that updates live. Everything stays on your
+server: one SQLite file, no cloud service, no accounts, and it installs and
+runs without internet access. **It ships with zero pre-loaded sources**, so a
+fresh install shows exactly what you configure.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how it's structured internally.
+![Pantomath dashboard](docs/screenshots/dashboard.png)
+
+> Screenshots use made-up sample data: no real vendors or incidents, CVE
+> numbers in the CVE-2099 range, and IP addresses from the ranges reserved
+> for documentation.
+
+## What it does
+
+- **Dashboard.** What needs attention now: high-severity items by published
+  date, what's new since you last looked, indicators found this week,
+  source health with the actual error for any failing feed, and a per-day
+  chart. Switch between 24 hours, 7, 30 and 90 days.
+- **Live feed.** A dense list you can filter by keyword, severity, source,
+  category and date, with a detail panel for the selected item: its
+  indicators with copy buttons, related items that share an indicator, and
+  one click through to everything else that mentions it. New items stay
+  marked until you mark them read. Keyboard: `J`/`K` move, `O` opens the
+  original, `S` saves, `Esc` closes the panel.
+- **Indicators.** Every extracted CVE, IP address, hash and email with how
+  often it was mentioned, by how many sources, the highest severity it
+  appeared with, and when it was first and last seen. Select some or all,
+  then copy them, export a CSV, or download a plain-text blocklist for your
+  firewall or EDR. The activity calendar narrows everything to one day.
+- **Sources.** Health at a glance: healthy and failing counts, last
+  successful poll, items today, response time, and *why* a feed is failing
+  ("HTTP 404 Not Found", "URL returned a web page, not an RSS/Atom feed",
+  "no response from the server within 15s"). Test a feed before saving it.
+- **Analytics.** Items published per day by severity, the severity mix
+  compared with the previous period, top sources, when items get published
+  (weekday by hour), the most mentioned vendors and threat actors,
+  categories and indicator counts, over 7, 30 or 90 days or 12 months.
+- **Search.** The search box in the header takes a CVE, IP address, hash or
+  email straight to it; anything else filters the Live feed. Press `/` to
+  jump to it.
+- **Wall screens.** The header shows **Not updating** in red if no data has
+  arrived for two minutes, so a frozen screen never looks like a quiet day.
+- **Also:** High severity, Vulnerabilities, Malware and Ransomware views,
+  vendor and threat-actor pages, saved items, webhook alerts, browser
+  notifications, light and dark themes, a phone layout, backup and restore,
+  and an optional retention limit.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Live feed with the detail panel open](docs/screenshots/live-feed.png) | ![Indicators with a selection and a drill-down](docs/screenshots/indicators.png) |
+| **Live feed.** Dense list, unread markers, detail panel. | **Indicators.** Table, selection and export, drill-down, calendar. |
+| ![Sources with health and failure reasons](docs/screenshots/sources.png) | ![Testing a feed before adding it](docs/screenshots/add-source.png) |
+| **Sources.** Health, last success, response time, why a feed fails. | **Add source.** Test the feed before saving. |
+| ![Analytics](docs/screenshots/analytics.png) | ![Light theme](docs/screenshots/dashboard-light.png) |
+| **Analytics.** Volume, severity mix, top sources, publishing times. | **Light theme.** |
+
+![Phone layout: dashboard and Live feed](docs/screenshots/phone.png)
+
+## Requirements
+
+- Linux on x86_64 with systemd. The Debian/Ubuntu package is built and
+  tested on Ubuntu 24.04. An RPM spec is included but untested (see
+  Known limitations).
+- Python 3.10 to 3.13 with `venv` (on Debian/Ubuntu: `python3-venv`). The
+  package bundles wheels for exactly these versions so it installs offline.
+- nginx only if you want HTTPS through `pantomath-admin setup-https`, which
+  installs it for you.
 
 
 ## Requirement
@@ -20,80 +83,80 @@ apt install nginx
 
 ## Install
 
-```bash
-# Debian/Ubuntu
-sudo dpkg -i pantomath_1.4.0_amd64.deb
-sudo apt-get install -f   # pulls in python3/python3-venv if missing
+Build the package from the repository, then install it:
 
-# RHEL/Fedora/CentOS
-sudo rpm -i pantomath-1.4.0.x86_64.rpm
+```bash
+sudo apt install python3-venv git
+git clone https://github.com/dzidulajubilee/Pantomath.git
+cd Pantomath
+./build.sh deb                                  # -> dist/pantomath_<version>_amd64.deb
+sudo dpkg -i dist/pantomath_*_amd64.deb
 ```
+
+`build.sh` reads the version with Python 3.11's `tomllib`. On Python 3.10
+(Ubuntu 22.04), pass it yourself: `VERSION=0.6.0 ./build.sh deb`.
+
+If you copy a ready-made `.deb` onto a server instead, check its
+`sha256sum` against the published one first. A truncated download fails
+halfway through unpacking.
 
 The installer:
 - creates a dedicated unprivileged `pantomath` system user
-- sets up an isolated Python venv under `/opt/pantomath/venv` and installs deps
-- installs and starts a `systemd` service (`pantomath.service`)
-- enables it to start on boot
+- sets up an isolated Python venv under `/opt/pantomath/venv` from the bundled wheels
+- installs, enables and starts the `pantomath` systemd service
 
-Open **http://localhost:7373**. The source list is empty — click **+ Add
-Source**, paste an RSS/Atom URL, and it starts polling immediately. Leave
-the icon field blank and Pantomath fetches the site's favicon for you.
+## First steps
 
+<<<<<<< Updated upstream
 
+=======
+1. Open `http://<server>:7373`.
+2. Go to **Sources**. The first time, choose a password for Settings and
+   Sources. A recovery code is shown once: keep it somewhere safe.
+3. Click **+ Add source**, paste an RSS or Atom URL and press **Test feed**.
+   If the test passes, click **Add source**. Leave the icon blank and
+   Pantomath fetches the site's favicon.
+4. Polling starts immediately. The dashboard fills in as items arrive.
+
+## Security notes
+
+- The dashboard, feeds, indicators and analytics can be read **without a
+  login** by design, so they can run on a shared or wall screen. Anything
+  that changes configuration, or makes the server fetch a URL, needs the
+  Settings password.
+- Pantomath listens on **all interfaces, port 7373**. Limit access with a
+  firewall, or run `sudo pantomath-admin setup-https` to put nginx with a
+  self-signed certificate in front of it (it can also bind Pantomath to
+  localhost only).
+- Feed URLs never appear in the public parts of the API, because they
+  sometimes contain API keys.
+- Forgot the password: `sudo pantomath-admin reset-settings-password`.
+>>>>>>> Stashed changes
 
 ## Configuration
 
-Everything is managed from the UI:
-- **Add a source**: name, RSS/Atom URL, category, optional custom icon, poll interval
-- **Pause/resume** a source without deleting its history
-- **Remove** a source (its cached items go with it)
-- **Filter** the Live Feed by category, severity, or free-text search
-- **Save/bookmark** any item (star icon) — shows up under **Saved**
-- **Vendors / Threat Actors**: automatically tagged via rule-based keyword
-  matching (see `docs/ARCHITECTURE.md`) — click a name to filter
-- **Export/Import sources** as JSON (Sources page or Settings)
-- **Backup**: download the raw SQLite database (Settings)
-- **Light/dark theme**: toggle in the header or Settings; persists locally
-- **Desktop notifications**: real browser notifications for new items above
-  a severity threshold you set — requires the dashboard tab to stay open
-  (see Honest scope notes)
-- **History**: nothing is deleted automatically (configurable in Settings
-  if you ever want a retention cap). Live Feed has date-range filtering
-  and "Load more" pagination to browse whatever's accumulated over time.
-- **IOCs**: CVEs, IP addresses, hashes, and emails are automatically
-  extracted from every article (rule-based, see
-  `docs/ARCHITECTURE.md`). The IOCs page shows top indicators per type
-  and a distribution breakdown — click any one to see exactly which
-  articles mention it. **Deep extraction** (on by default, toggle in
-  Settings) fetches each new article's full page rather than just the
-  RSS teaser, since real indicators usually aren't in the short summary.
-- **Webhook alerts**: send a POST to any URL when a new item matches a
-  keyword, a specific source, and/or a minimum severity — configurable
-  in Settings, with a one-click test button. Works over plain HTTP,
-  unlike browser notifications.
-- **Reprocess stored items** (Settings): re-runs severity/tagging/IOC
-  detection against everything already on disk, without re-fetching any
-  RSS feed. Use this after an upgrade to backfill data for items stored
-  before a detection feature existed.
-- **Refresh all now** (Sources page): fetches every enabled source
-  immediately rather than waiting for its scheduled interval.
-- **Edit sources and webhooks in place** — change a source's URL,
-  category, or poll interval, or a webhook's keyword/source/severity
-  filter, without deleting and recreating it.
-- **Numbered pagination** on Live Feed, with severity/keyword/date
-  filters fully server-side for accurate page counts.
+Almost everything is managed in the UI:
 
-Data lives in a single SQLite file: `/var/lib/pantomath/pantomath.db`.
-Source icons are fetched once and cached to disk next to it (in an
-`icons/` folder) — the browser never repeatedly hits an external favicon
-service.
+- **Sources**: add (with a feed test), edit, pause, resume and remove; export
+  and import the list as JSON; **Refresh all now** polls every enabled
+  source immediately.
+- **Deep extraction** (Settings, on by default) fetches each new article's
+  full page, not just the RSS teaser, because real indicators are rarely in
+  the summary.
+- **Webhook alerts** (Settings): a POST to any URL when a new item matches a
+  keyword, a source and/or a minimum severity, with a test button.
+- **Desktop notifications** (Settings): browser notifications above a
+  severity you choose, while a dashboard tab is open.
+- **Retention** (Settings): nothing is deleted unless you set a limit.
+- **Reprocess stored items** (Settings): re-runs severity scoring, tagging and
+  indicator extraction on everything already stored, without re-fetching.
+- **Backup and restore** (Settings): download the SQLite file, or restore one.
 
-Want a curated starter pack pre-loaded on install (e.g. for fleet
-deployment)? Add entries to `config/feeds.json` before building the
-package — it's only read on a genuinely empty database, so it never
-affects an install that already has sources.
+Data lives in `/var/lib/pantomath/pantomath.db`. Source icons are fetched once
+and cached next to it.
 
-To change the listening port:
+To change the port:
+
 ```bash
 sudo systemctl edit pantomath.service
 # [Service]
@@ -101,86 +164,68 @@ sudo systemctl edit pantomath.service
 sudo systemctl restart pantomath
 ```
 
-**Honest scope notes** (things intentionally simplified in this version):
-- Vendor/threat-actor tagging is keyword-based, not NLP/ML — see
-  `pantomath/intelligence/tagging.py` to tune or extend the lists.
-- Desktop notifications only fire while the dashboard tab is open in your
-  browser (standard browser Notification API, no background push) — see
-  `docs/ARCHITECTURE.md`.
-- Light/dark only — no custom theme colors yet.
-- RSS itself only exposes a source's most recent items — Pantomath can't
-  retroactively pull a year of history a source never published via RSS.
-  "Keep forever" (the default) means everything Pantomath *has* seen
-  stays browsable; it accumulates real history over time rather than
-  fabricating it.
-- Deep extraction (fetching full article pages) means more outbound
-  requests and a slower first poll for a newly-added source — turn it
-  off in Settings if that's not a tradeoff you want. It fails silently
-  back to summary-only text on paywalls/timeouts/blocks, never blocks
-  storing an item.
-- Webhook payloads are a generic JSON shape with a Slack/Discord-compatible
-  "text" field, not a native integration for any specific service — full
-  native formatting (Slack blocks, Discord embeds) would need a small
-  transform in front of the webhook URL.
+Want a starter set of feeds on a fresh install (for example, for a fleet of
+servers)? Add them to `config/feeds.json` before building the package. It is
+only read when the database has no sources at all.
 
 ## Upgrading
 
-After upgrading to a new version, two things are worth doing from
-Settings:
-1. **Reprocess all stored items** — if the new version added or improved
-   any detection (IOCs, tagging, severity scoring), your existing items
-   won't have that data until you do this. It's a one-time backfill, not
-   something that happens automatically on upgrade.
-2. **Hard-refresh your browser tab** (Ctrl+Shift+R / Cmd+Shift+R) once,
-   just in case — the dashboard cache-busts its own CSS/JS against the
-   installed version automatically, but it's a cheap sanity check after
-   a version jump.
+Install the new package over the old one with `sudo dpkg -i`. Your data and
+settings are kept, and any database changes are applied automatically when
+the service starts. Then:
+
+1. **Settings → Reprocess all**, if the new version improves detection
+   (0.4.5 fixed tagging and severity scoring; items stored earlier keep
+   their old tags until you do this).
+2. **Hard-refresh** the browser once (Ctrl+Shift+R).
 
 ## Operating
 
 ```bash
 sudo systemctl status pantomath
 sudo systemctl restart pantomath
-journalctl -u pantomath -f
+sudo journalctl -u pantomath -f
 ```
 
-Uninstall (keeps data): `sudo apt remove pantomath` / `sudo rpm -e pantomath`
-Full purge (wipes data): `sudo apt purge pantomath`
+Uninstall but keep data: `sudo apt remove pantomath`. Remove everything,
+including data: `sudo apt purge pantomath`.
 
-## Building the packages from source
-
-```bash
-./build.sh deb     # -> dist/pantomath_<ver>_amd64.deb   (dpkg-deb, no extra tools)
-./build.sh rpm     # -> dist/pantomath-<ver>.x86_64.rpm  (requires nfpm)
-./build.sh all
-```
-
-`nfpm` (https://nfpm.goreleaser.com/) builds the `.rpm` from
-`installer/rpm/nfpm.yaml` — no `rpmbuild`/RPM toolchain required.
-
-## Running without installing a package (dev mode)
+## Building and development
 
 ```bash
-make dev              # creates venv/, pip install -e ".[dev]"
+./build.sh deb        # Debian/Ubuntu package, needs only dpkg-deb
+./build.sh rpm        # RPM, needs nfpm (https://nfpm.goreleaser.com/)
+
+make dev              # venv/ with an editable install and dev tools
 source venv/bin/activate
-make run              # -> http://localhost:7373
+make run              # http://localhost:7373, data in ./data/
+make test             # the pytest suite
 ```
 
-Or by hand:
-```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -e ".[dev]"
-export PANTOMATH_DB=./data/pantomath.db
-export PYTHONPATH=.
-uvicorn pantomath.app:app --reload --port 7373
-```
+How it fits together, and why things are the way they are:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Contributor guide:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Development
+## Known limitations
 
-Pantomath is a normal installable Python package (`pyproject.toml`), with
-a pytest suite and ruff for linting — see
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contributor guide.
+- **Severity** is a keyword heuristic for triage, not CVSS or EPSS. Keywords
+  live in `pantomath/intelligence/scoring.py`.
+- **Vendor and threat-actor tags** come from curated name lists
+  (`pantomath/intelligence/tagging.py`), and indicators are pattern-matched.
+  Both are fast and predictable, but they aren't NLP.
+- **Read state** ("new since you last looked", Mark all as read) is kept per
+  browser. There are no user accounts.
+- **Source health history** (last success, failing since, response time)
+  starts recording once you run 0.6.0 or later.
+- **RSS only shows recent items.** Pantomath builds up history from the day
+  you add a source; it can't fetch what a feed no longer lists.
+- **Desktop notifications** only fire while a dashboard tab is open.
+  Webhooks work without a browser.
+- **RPM:** the spec depends on a `python3-venv` package that RHEL and Fedora
+  don't have, and RHEL 9's default Python (3.9) is older than Pantomath
+  needs. It hasn't been tested.
 
+<<<<<<< Updated upstream
 ```bash
 make test    # pytest — 34 tests covering dedup, tagging, connector registry, API behavior
 make lint    # ruff check
@@ -208,3 +253,24 @@ make fmt     # ruff check --fix + format
 ### Settings
 
 <img width="1920" height="907" alt="Screenshot from 2026-07-07 17-33-10" src="https://github.com/user-attachments/assets/29f1eb38-1769-4367-a3c7-7bca1ffcf2b4" />
+=======
+## Changelog
+
+**0.6.0** — Redesigned Live feed (dense list, detail panel, unread markers,
+source and category filters, keyboard shortcuts), Indicators (table with
+mentions, sources, severity and first/last seen; selection, copy, CSV and
+blocklist export; "seen alongside"; calendar kept), Sources (health summary,
+last success, failing since, response time, per-source feed test) and a
+new Analytics page. Feed test before saving a source. Items that arrive in
+the same poll are listed newest-published first.
+
+**0.5.0** — New look (IBM Plex Sans, higher contrast, severity shown with
+label and shape), grouped navigation with a phone drawer, header search,
+failing-source and "Not updating" indicators, new dashboard. Counts follow
+each item's published date.
+
+**0.4.5** — Broken feeds now show why they fail instead of "ok"; feed
+fetches time out instead of stalling every source; vendor, actor and
+severity keywords match whole words ("intelligence" no longer tags Intel,
+"source" no longer scores as RCE).
+>>>>>>> Stashed changes

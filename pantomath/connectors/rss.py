@@ -14,7 +14,7 @@ import uuid
 from pantomath.connectors.base import BaseConnector
 from pantomath.feeds.article_fetcher import fetch_article_text_sync
 from pantomath.feeds.parser import normalize_entry
-from pantomath.feeds.rss import fetch_raw
+from pantomath.feeds.rss import FETCH_HARD_LIMIT, FeedFetchError, fetch_raw
 from pantomath.intelligence.ioc_extraction import extract_iocs
 from pantomath.intelligence.scoring import score_severity
 from pantomath.intelligence.tagging import extract_tags
@@ -26,8 +26,19 @@ class RSSConnector(BaseConnector):
     connector_type = "rss"
 
     async def fetch(self):
-        loop = asyncio.get_event_loop()
-        feed = await loop.run_in_executor(None, fetch_raw, self.source["url"])
+        loop = asyncio.get_running_loop()
+        try:
+            # fetch_raw bounds its own connect/read/download time, but not
+            # DNS resolution — this is the backstop that guarantees one
+            # source can never hold up the scheduler's poll of the others.
+            # (The worker thread is left to finish on its own; the poll
+            # loop just stops waiting for it.)
+            feed = await asyncio.wait_for(
+                loop.run_in_executor(None, fetch_raw, self.source["url"]),
+                timeout=FETCH_HARD_LIMIT,
+            )
+        except asyncio.TimeoutError as e:
+            raise FeedFetchError(f"no response within {FETCH_HARD_LIMIT}s") from e
         return feed.entries[:50]
 
     def normalize(self, raw) -> list[dict]:

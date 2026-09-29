@@ -32,7 +32,13 @@ function setSettingsToken(token) {
     if (settingsToken) {
       opts = { ...opts, headers: { ...(opts.headers || {}), 'X-Settings-Token': settingsToken } };
     }
-    return nativeFetch(url, opts);
+    return nativeFetch(url, opts).then(res => {
+      // 0.8.0: the server asks for sign-in (session expired or revoked).
+      if (res.status === 401 && res.headers.get('X-Pantomath-Sign-In') && !document.body.classList.contains('signed-out')) {
+        showSignIn(null, 'expired');
+      }
+      return res;
+    });
   };
 })();
 
@@ -229,11 +235,13 @@ const CATEGORY_COLORS = {
 // ------------------------------------------------------------------ router
 
 const VIEWS = [
-  'dashboard', 'live-feed', 'critical', 'vulnerabilities', 'malware',
+  'dashboard', 'affects-us', 'exploited', 'live-feed', 'critical', 'vulnerabilities', 'malware',
   'ransomware', 'threat-actors', 'vendors', 'iocs', 'saved', 'sources', 'analytics', 'settings'
 ];
 const VIEW_LOADERS = {
   'dashboard': loadDashboard,
+  'affects-us': () => loadFeedPage('affects-us'),
+  'exploited': () => loadFeedPage('exploited'),
   'live-feed': loadLiveFeed,
   'critical': () => loadFeedPage('critical'),
   'vulnerabilities': () => loadFeedPage('vulnerabilities'),
@@ -286,7 +294,7 @@ async function loadDashboard() {
   document.getElementById('dashSubtitle').textContent =
     `${generated.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}, ` +
     `${fmtClock(ov.generated_at)}. Counts use each item's published date.`;
-  document.getElementById('attentionSub').textContent = `High severity, published in the last ${range}`;
+  document.getElementById('attentionSub').textContent = `Critical and high priority, published in the last ${range}`;
 
   const src = ov.sources, ind = ov.indicators_week;
   const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -297,9 +305,10 @@ async function loadDashboard() {
   else if (src.total) sourcesNote = 'all working';
 
   const kpis = [
-    { label: 'High severity', value: ov.high_in_window, note: `published in the last ${range}`,
-      goto: 'critical', tone: ov.high_in_window ? 'high' : '' },
-    { label: 'New since you last looked', value: ov.new_since, note: `since ${fmtClock(ov.since)}`, goto: 'live-feed' },
+    { label: 'Critical and high', value: ov.high_in_window,
+      note: `${ov.critical_in_window || 0} critical, published in the last ${range}`,
+      goto: 'critical', tone: ov.critical_in_window ? 'critical' : ov.high_in_window ? 'high' : '' },
+    { label: 'New since you last looked', value: adjustedNewCount(ov.new_since, ov.since), note: `since ${fmtClock(ov.since)}`, goto: 'live-feed' },
     { label: 'Indicators this week', value: ind.cve + ind.ip + ind.hash + ind.email,
       note: `${count(ind.cve, 'CVE', 'CVEs')}, ${count(ind.ip, 'IP', 'IPs')}, ${count(ind.hash, 'hash', 'hashes')}, ${count(ind.email, 'email', 'emails')}`,
       goto: 'iocs' },
@@ -350,7 +359,7 @@ function renderAttention(ov, range) {
     <li class="attention-row">
       <span class="sev-pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
       <div class="attention-main">
-        <a class="attention-title" href="${safeHref(i.link)}" target="_blank" rel="noopener">${escapeHtml(i.title)}</a>
+        <a class="attention-title" href="${safeHref(i.link)}" target="_blank" rel="noopener">${flagsHtml(i)}${escapeHtml(i.title)}</a>
         <div class="attention-meta">
           <span>${escapeHtml(i.source_name)}</span>
           ${i.cves[0] ? `<span class="chip chip-ioc">${escapeHtml(i.cves[0])}</span>` : ''}
@@ -390,17 +399,19 @@ function renderSourceHealth(src) {
 
 function renderDayChart(days) {
   const el = document.getElementById('dashDays');
-  const max = Math.max(1, ...days.map(d => d.high + d.medium + d.low));
+  days.forEach(d => { d.critical = d.critical || 0; });
+  const max = Math.max(1, ...days.map(d => d.critical + d.high + d.medium + d.low));
   const px = n => Math.max(3, Math.round((n / max) * 96));
   const todayKey = days[days.length - 1].date;
   el.innerHTML = days.map(d => {
-    const total = d.high + d.medium + d.low;
+    const total = d.critical + d.high + d.medium + d.low;
     const isToday = d.date === todayKey;
     const label = isToday ? 'Today' : new Date(d.date + 'T12:00:00').toLocaleDateString([], { weekday: 'short' });
-    const summary = `${label}: ${total} published, ${d.high} high, ${d.medium} medium, ${d.low} low`;
+    const summary = `${label}: ${total} published, ${d.critical} critical, ${d.high} high, ${d.medium} medium, ${d.low} low`;
     return `<div class="day-col" role="img" aria-label="${escapeAttr(summary)}">
       <span class="day-total">${total}</span>
       <div class="day-bars">
+        ${d.critical ? `<i class="bar-critical" style="height:${px(d.critical)}px"></i>` : ''}
         ${d.high ? `<i class="bar-high" style="height:${px(d.high)}px"></i>` : ''}
         ${d.medium ? `<i class="bar-medium" style="height:${px(d.medium)}px"></i>` : ''}
         ${d.low ? `<i class="bar-low" style="height:${px(d.low)}px"></i>` : ''}
@@ -413,7 +424,7 @@ function renderDayChart(days) {
 // -------------------------------------------------------------- live feed
 
 let liveSearchTerm = '';
-let liveSeverities = new Set(['high', 'medium', 'low']);
+let liveSeverities = new Set(['critical', 'high', 'medium', 'low']);
 let liveDateFrom = '';
 let liveDateTo = '';
 let liveCurrentPage = 1;
@@ -421,15 +432,19 @@ const LIVE_PAGE_SIZE = 50;
 let liveSearchDebounce = null;
 let liveSourceId = '';
 let liveCategory = '';
+let liveOnlyOurs = false;
+let liveOnlyExploited = false;
 
 function liveFilterParams() {
   const params = {};
-  if (liveSeverities.size < 3) params.severity = [...liveSeverities].join(',');
+  if (liveSeverities.size < 4) params.severity = [...liveSeverities].join(',');
   if (liveSearchTerm) params.keyword = liveSearchTerm;
   if (liveDateFrom) params.date_from = liveDateFrom;
   if (liveDateTo) params.date_to = liveDateTo;
   if (liveSourceId) params.source_id = liveSourceId;
   if (liveCategory) params.category = liveCategory;
+  if (liveOnlyOurs) params.affects_us = true;
+  if (liveOnlyExploited) params.exploited = true;
   return params;
 }
 
@@ -820,7 +835,7 @@ async function loadAnalytics() {
   };
   const kpis = [
     { label: 'Items published', value: t.items, note: change(t.items, p.items) },
-    { label: 'High severity', value: t.high, tone: t.high ? 'high' : '', note: `${t.items ? Math.round((t.high / t.items) * 100) : 0}% of items, ${change(t.high, p.high)}` },
+    { label: 'Critical and high', value: t.critical + t.high, tone: t.critical ? 'critical' : t.high ? 'high' : '', note: `${t.critical} critical; ${t.items ? Math.round(((t.critical + t.high) / t.items) * 100) : 0}% of items, ${change(t.critical + t.high, p.critical + p.high)}` },
     { label: 'Indicators found', value: ind.cve + ind.ip + ind.hash + ind.email, note: `${ind.cve} CVEs, ${ind.ip} IPs, ${ind.hash} hashes, ${ind.email} emails` },
     { label: 'Sources publishing', value: a.active_sources, note: 'with at least one item in this period' },
   ];
@@ -867,6 +882,7 @@ async function loadSettingsView() {
   }
 
   await loadWebhooksTable();
+  refreshActiveSettingsTab();
 }
 
 async function loadWebhooksTable() {
@@ -895,6 +911,8 @@ async function loadWebhooksTable() {
       parts.push(`source: ${src ? src.name : 'unknown'}`);
     }
     if (w.min_severity) parts.push(`severity ≥ ${w.min_severity}`);
+    if (w.only_affects_us) parts.push('affects our stack');
+    if (w.only_exploited) parts.push('exploited (CISA KEV)');
     const trigger = parts.length ? parts.join(', ') : 'any new item';
     const statusOk = w.last_status && w.last_status.startsWith('ok');
     return `
@@ -1340,6 +1358,8 @@ function openWebhookModal(webhook, verifiedKey = null) {
   document.getElementById('whSource').value = webhook ? webhook.source_id : '';
   document.getElementById('whMinSeverity').value = webhook ? webhook.min_severity : '';
   document.getElementById('whInsecureTls').checked = webhook ? !!webhook.allow_insecure_tls : false;
+  document.getElementById('whOnlyOurs').checked = webhook ? !!webhook.only_affects_us : false;
+  document.getElementById('whOnlyExploited').checked = webhook ? !!webhook.only_exploited : false;
   whProtectCheckbox.checked = webhook ? !!webhook.protected : false;
   whKeyInput.value = '';
   whKeyInput.placeholder = (webhook && webhook.protected) ? 'Leave blank to keep the current key' : 'Enter a key';
@@ -1362,12 +1382,14 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
   const source_id = document.getElementById('whSource').value;
   const min_severity = document.getElementById('whMinSeverity').value;
   const allow_insecure_tls = document.getElementById('whInsecureTls').checked;
+  const only_affects_us = document.getElementById('whOnlyOurs').checked;
+  const only_exploited = document.getElementById('whOnlyExploited').checked;
   const wantsProtection = whProtectCheckbox.checked;
   const keyInput = whKeyInput.value;
   if (!name || !url) { alert('Name and webhook URL are required'); return; }
 
   const isEditing = !!editingWebhookId;
-  const body = { name, url, keyword, source_id, min_severity, allow_insecure_tls };
+  const body = { name, url, keyword, source_id, min_severity, allow_insecure_tls, only_affects_us, only_exploited };
   if (!isEditing) body.enabled = true;
 
   if (wantsProtection) {
@@ -1394,6 +1416,8 @@ document.getElementById('confirmAddWebhook').onclick = async () => {
     document.getElementById('whSource').value = '';
     document.getElementById('whMinSeverity').value = '';
     document.getElementById('whInsecureTls').checked = false;
+    document.getElementById('whOnlyOurs').checked = false;
+    document.getElementById('whOnlyExploited').checked = false;
     whProtectCheckbox.checked = false;
     whKeyInput.value = '';
     whKeyField.style.display = 'none';
@@ -1417,6 +1441,9 @@ const previousVisitEnded = (() => {
   try { return parseFloat(localStorage.getItem(LAST_SEEN_KEY)) || null; } catch (e) { return null; }
 })();
 function recordLastSeen() {
+  // The sign-in page isn't a visit: signing in (which reloads the page)
+  // must not mark everything as already seen.
+  if (document.body.classList.contains('signed-out') || document.body.classList.contains('booting')) return;
   try { localStorage.setItem(LAST_SEEN_KEY, String(Date.now() / 1000)); } catch (e) { /* storage disabled */ }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') recordLastSeen(); });
@@ -1439,6 +1466,7 @@ async function fetchOverview() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const ov = await res.json();
   lastOverviewData = ov;
+  renderStackBanner(ov);
   lastDataAt = Date.now();
   populateLiveSourceFilter();
   updateShellIndicators(ov);
@@ -1475,7 +1503,9 @@ function updateShellIndicators(ov) {
   }
   setNavCount('navSourcesCount', src.failing);
   document.getElementById('navSourcesCount').dataset.kind = 'bad';
-  setNavCount('navNewCount', ov.new_since);
+  setNavCount('navNewCount', adjustedNewCount(ov.new_since, ov.since));
+  if (ov.affects_us) setNavCount('navAffectsCount', ov.affects_us.items);
+  if (ov.exploited) setNavCount('navExploitedCount', ov.exploited.items);
 }
 
 function formatAge(seconds) {
@@ -1615,6 +1645,72 @@ function downloadText(filename, text, type) {
 // after you last left or last pressed "Mark all as read", whichever is later.
 const READ_MARK_KEY = 'pantomath-read-mark';
 const pageLoadedAt = Date.now() / 1000;
+// 0.8.0: opening an item marks just that item read, at once. `read` holds
+// items opened after the time mark (so they stop counting as new);
+// `unread` holds items marked unread again from before it. Both are small:
+// entries the time mark already covers are pruned.
+const READ_ITEMS_KEY = 'pantomath-read-items';
+let readState = loadReadState();
+function loadReadState() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(READ_ITEMS_KEY) || '{}');
+    return { read: stored.read || {}, unread: stored.unread || {} };
+  } catch (e) {
+    return { read: {}, unread: {} };
+  }
+}
+function saveReadState() {
+  const since = unreadSince();
+  const keep = (map, test) => Object.fromEntries(Object.entries(map).filter(([, ts]) => test(ts)).sort((x, y) => y[1] - x[1]).slice(0, 3000));
+  readState = { read: keep(readState.read, ts => ts > since), unread: keep(readState.unread, ts => ts <= since) };
+  try { localStorage.setItem(READ_ITEMS_KEY, JSON.stringify(readState)); } catch (e) { /* not remembered */ }
+}
+function isUnread(item) {
+  if (readState.unread[item.id]) return true;
+  if (readState.read[item.id]) return false;
+  return item.fetched_at > unreadSince();
+}
+function adjustedNewCount(serverCount, since) {
+  const mark = since || unreadSince();
+  let count = serverCount || 0;
+  Object.values(readState.read).forEach(ts => { if (ts > mark) count -= 1; });
+  Object.values(readState.unread).forEach(ts => { if (ts <= mark) count += 1; });
+  return Math.max(0, count);
+}
+function setItemRead(item, read) {
+  if (isUnread(item) === !read) return;
+  delete readState.read[item.id];
+  delete readState.unread[item.id];
+  if (read && item.fetched_at > unreadSince()) readState.read[item.id] = item.fetched_at;
+  if (!read && item.fetched_at <= unreadSince()) readState.unread[item.id] = item.fetched_at;
+  saveReadState();
+  applyReadState();
+}
+// Everything that shows "new" catches up without a refresh; rows keep
+// their place so the list doesn't move under the pointer.
+function applyReadState() {
+  const all = Object.values(FEED_PANELS).flatMap(p => p.items);
+  document.querySelectorAll('.feed-row[data-id]').forEach(row => {
+    const item = all.find(i => i.id === row.dataset.id);
+    if (item) row.classList.toggle('unread', isUnread(item));
+  });
+  document.querySelectorAll('.detail-panel [data-role="read-toggle"]').forEach(btn => {
+    const item = all.find(i => i.id === btn.dataset.id);
+    if (item) btn.textContent = isUnread(item) ? 'Mark as read' : 'Mark as unread';
+  });
+  if (lastOverviewData) updateShellIndicators(lastOverviewData);
+  updateLiveSubtitle();
+  const view = currentView();
+  if (FEED_PAGES[view]) renderFeedStats(FEED_PAGES[view].key + 'Stats', FEED_PAGES[view].allItems, FEED_PAGES[view].fourth);
+  if (view === 'dashboard') VIEW_LOADERS.dashboard();
+}
+window.addEventListener('storage', (e) => {
+  if (e.key === READ_ITEMS_KEY || e.key === READ_MARK_KEY) {
+    readState = loadReadState();
+    applyReadState();
+  }
+});
+
 function unreadSince() {
   let mark = 0;
   try { mark = parseFloat(localStorage.getItem(READ_MARK_KEY)) || 0; } catch (e) { /* storage disabled */ }
@@ -1665,6 +1761,8 @@ document.getElementById('liveSource').addEventListener('change', (e) => { liveSo
 document.getElementById('liveCategory').addEventListener('change', (e) => { liveCategory = e.target.value; loadLiveFeed(1); });
 document.getElementById('liveMarkAllRead').addEventListener('click', () => {
   try { localStorage.setItem(READ_MARK_KEY, String(Date.now() / 1000)); } catch (e) { /* storage disabled */ }
+  readState = { read: {}, unread: {} };
+  saveReadState();
   Object.values(FEED_PANELS).forEach(renderFeedRows);
   updateLiveSubtitle();
   refreshShell();
@@ -1684,11 +1782,26 @@ function populateLiveSourceFilter() {
 }
 
 function updateLiveSubtitle() {
-  const filtered = liveSearchTerm || liveSeverities.size < 3 || liveDateFrom || liveDateTo || liveSourceId || liveCategory;
-  const newCount = livePanel.items.filter(i => i.fetched_at > unreadSince()).length;
+  const filtered = liveSearchTerm || liveSeverities.size < 4 || liveDateFrom || liveDateTo || liveSourceId || liveCategory || liveOnlyOurs || liveOnlyExploited;
+  const newCount = livePanel.items.filter(isUnread).length;
   document.getElementById('liveSubtitle').textContent =
     `${liveTotal} item${liveTotal === 1 ? '' : 's'}${filtered ? ' match these filters' : ''}, newest arrivals first. ` +
     (newCount ? `${newCount} new on this page since ${fmtClock(unreadSince())}.` : 'Nothing new on this page.');
+}
+
+function whyHtml(i) {
+  const reasons = i.priority_reasons || [];
+  if (!reasons.length) return '';
+  const kind = r => (r.startsWith('Exploited') ? ' exploited' : r.startsWith('Affects us') ? ' ours' : '');
+  return `<div class="why"><span class="why-label">Why ${escapeHtml(i.severity.charAt(0).toUpperCase() + i.severity.slice(1))}:</span>${reasons.map(r => `<span class="why-chip${kind(r)}">${escapeHtml(r)}</span>`).join('')}</div>`;
+}
+
+function flagsHtml(i) {
+  const exploited = i.kev_cves && i.kev_cves.length
+    ? `<span class="flag flag-exploited" title="${escapeAttr(i.kev_cves.join(', '))} on CISA's Known Exploited Vulnerabilities list">Exploited</span>` : '';
+  const ours = i.watch_hits && i.watch_hits.length
+    ? `<span class="flag flag-ours" title="Affects us: ${escapeAttr(i.watch_hits.join(', '))}">Affects us</span>` : '';
+  return exploited + ours;
 }
 
 function feedRowHtml(panel, i, unread) {
@@ -1697,9 +1810,9 @@ function feedRowHtml(panel, i, unread) {
   const saved = !!i.bookmarked;
   return `<div class="feed-row${unread ? ' unread' : ''}${i.id === panel.selectedId ? ' selected' : ''}" data-id="${escapeAttr(i.id)}" role="listitem">
     <span class="unread-dot" aria-label="${unread ? 'New' : ''}"></span>
-    <span class="sev-pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
+    <span class="sev-pill sev-${escapeAttr(i.severity)}" title="${escapeAttr((i.priority_reasons || []).join('. '))}">${escapeHtml(i.severity)}</span>
     <div class="feed-row-main">
-      <button type="button" class="feed-row-title">${escapeHtml(i.title)}</button>
+      <div class="feed-row-headline">${flagsHtml(i)}<button type="button" class="feed-row-title">${escapeHtml(i.title)}</button></div>
       <div class="feed-row-summary">${escapeHtml(truncateAtSentence(stripHtml(i.summary)))}</div>
     </div>
     <span class="feed-row-source">${sourceIconHtml(i.source_id, i.source_color)}<span>${escapeHtml(i.source_name)}</span></span>
@@ -1722,8 +1835,8 @@ function renderFeedRows(panel) {
   const parts = anyUnread ? ['<div class="feed-divider new">New since you last looked</div>'] : [];
   let earlierShown = false;
   for (const i of panel.items) {
-    const unread = i.fetched_at > since;
-    if (anyUnread && !unread && !earlierShown) { parts.push('<div class="feed-divider">Earlier</div>'); earlierShown = true; }
+    const unread = isUnread(i);
+    if (anyUnread && i.fetched_at <= since && !earlierShown) { parts.push('<div class="feed-divider">Earlier</div>'); earlierShown = true; }
     parts.push(feedRowHtml(panel, i, unread));
   }
   el.innerHTML = parts.join('');
@@ -1783,6 +1896,14 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
       <button type="button" class="icon-btn-sq" data-role="close" aria-label="Close details">${CLOSE_ICON}</button>
     </div>
     <h3 class="detail-title">${escapeHtml(i.title)}</h3>
+    ${whyHtml(i)}
+    ${i.kev_cves.length ? `<div class="detail-flags">
+      ${i.kev_cves.length ? `<div class="flag-box exploited">
+        <strong>Exploited in the wild</strong>
+        <span>${escapeHtml(i.kev_cves.join(', '))} ${i.kev_cves.length === 1 ? 'is' : 'are'} on CISA's Known Exploited Vulnerabilities list.</span>
+        <span class="flag-box-detail" data-role="kev"></span>
+      </div>` : ''}
+    </div>` : ''}
     <dl class="detail-meta">
       <dt>Source</dt><dd>${escapeHtml(i.source_name)}</dd>
       <dt>Published</dt><dd>${escapeHtml(fmtFull(effectiveTs(i)))}</dd>
@@ -1797,7 +1918,7 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
         ${indicators.length ? '<button type="button" class="btn btn-sm" data-role="copy-all">Copy all</button>' : ''}
       </div>
       ${indicators.length ? indicators.map(([type, label, v]) => `
-        <div class="ioc-line">
+        <div class="ioc-line${i.kev_cves.includes(v) ? ' exploited' : ''}"${i.kev_cves.includes(v) ? ' title="On CISA\'s Known Exploited Vulnerabilities list"' : ''}>
           <span class="ioc-type">${label}</span>
           <button type="button" class="ioc-value" data-ioc-type="${type}" data-ioc-value="${escapeAttr(v)}" title="Show every item mentioning this">${escapeHtml(v)}</button>
           <button type="button" class="row-icon" data-copy="${escapeAttr(v)}" aria-label="Copy ${escapeAttr(v)}">${COPY_ICON}</button>
@@ -1807,9 +1928,13 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
     <div class="detail-actions">
       <a class="btn btn-primary" href="${safeHref(i.link)}" target="_blank" rel="noopener">Open original &#8599;</a>
       <button type="button" class="btn" data-role="save">${i.bookmarked ? '&#9733; Saved' : '&#9734; Save'}</button>
+      <button type="button" class="btn" data-role="read-toggle" data-id="${escapeAttr(i.id)}">Mark as unread</button>
     </div>`;
   el.querySelector('[data-role="close"]').onclick = () => closeFeedDetail(panel);
   el.querySelector('[data-role="save"]').onclick = () => toggleFeedBookmark(panel, i);
+  el.querySelector('[data-role="read-toggle"]').onclick = () => setItemRead(i, isUnread(i));
+  el.querySelector('.detail-actions a').addEventListener('click', () => setItemRead(i, true));
+  if (!force) setItemRead(i, true);  // opening an item is reading it (a re-render isn't)
   const copyAll = el.querySelector('[data-role="copy-all"]');
   if (copyAll) copyAll.onclick = () => copyText(indicators.map(x => x[2]).join('\n'), `${indicators.length} indicator${indicators.length === 1 ? '' : 's'}`);
   el.querySelectorAll('[data-copy]').forEach(btn => { btn.onclick = () => copyText(btn.dataset.copy, btn.dataset.copy); });
@@ -1817,6 +1942,15 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
     btn.onclick = () => openMention({ cve: 'cves', ip: 'ips', hash: 'hashes', email: 'emails' }[btn.dataset.iocType], btn.dataset.iocValue);
   });
   loadRelated(panel, i);
+  if (i.kev_cves.length) loadKevDetail(panel, i);
+}
+
+async function loadKevDetail(panel, i) {
+  const entries = await (await fetch('/api/kev?cves=' + encodeURIComponent(i.kev_cves.join(',')))).json();
+  if (panel.shownId !== i.id) return;
+  const el = document.getElementById(panel.detailId).querySelector('[data-role="kev"]');
+  const day = d => (d ? new Date(d + 'T00:00:00').toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }) : '?');
+  el.textContent = entries.map(e => `${e.cve}${e.name ? `, ${e.name}` : ''}: added ${day(e.date_added)}, CISA deadline ${day(e.due_date)}${e.ransomware === 'Known' ? ', used in ransomware campaigns' : ''}.`).join(' ');
 }
 
 async function loadRelated(panel, i) {
@@ -1839,6 +1973,13 @@ async function loadRelated(panel, i) {
 // A CVE, IP, hash or email opens its drill-down on Indicators; a vendor or
 // threat actor opens that page with it selected.
 function openMention(field, value) {
+  if (field === 'watch_hits') {
+    const cfg = FEED_PAGES['affects-us'];
+    document.getElementById('oursFilter').value = value;
+    cfg.filterText = value.toLowerCase();
+    navigateTo('affects-us');
+    return;
+  }
   if (field === 'vendors') { selectedVendor = value; navigateTo('vendors'); return; }
   if (field === 'actors') { selectedActor = value; navigateTo('threat-actors'); return; }
   const type = { cves: 'cve', ips: 'ip', hashes: 'hash', emails: 'email' }[field];
@@ -1889,10 +2030,27 @@ async function fetchEither(paramsA, paramsB) {
 }
 
 const FEED_PAGES = {
+  'affects-us': {
+    key: 'ours', list: 'feedOurs', mentions: ['watch_hits', 'cves', 'actors'], fourth: 'exploited',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, affects_us: true }),
+    empty: () => (lastOverviewData && lastOverviewData.affects_us && lastOverviewData.affects_us.watchlist
+      ? { title: 'Nothing mentions our stack yet', hint: 'Items that name something on Our stack will appear here.' }
+      : { title: 'Tell Pantomath what you run', hint: 'Add your vendors and products under Settings, Our stack. Stored items are checked straight away.' }),
+  },
+  exploited: {
+    key: 'exploited', list: 'feedExploited', mentions: ['cves', 'vendors', 'watch_hits'], fourth: 'ours',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, exploited: true }),
+    empty: () => {
+      const x = lastOverviewData && lastOverviewData.exploited;
+      if (x && !x.enabled) return { title: 'The KEV catalog is turned off', hint: 'Turn it on under Settings, Exploited vulnerabilities.' };
+      if (x && !x.catalog) return { title: 'No catalog downloaded yet', hint: 'Settings, Exploited vulnerabilities shows whether the download worked.' };
+      return { title: 'No exploited vulnerabilities mentioned', hint: "Items that mention a CVE on CISA's list will appear here." };
+    },
+  },
   critical: {
-    key: 'critical', list: 'feedCritical', mentions: ['cves', 'vendors', 'actors'], fourth: 'cve',
-    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, severity: 'high' }),
-    empty: { title: 'No high-severity items', hint: 'Items scored high severity will appear here.' },
+    key: 'critical', list: 'feedCritical', mentions: ['watch_hits', 'cves', 'vendors', 'actors'], fourth: 'critical',
+    fetch: () => fetchItems({ limit: FEED_PAGE_LIMIT, severity: 'critical,high' }),
+    empty: { title: 'Nothing critical or high', hint: 'Items with Critical or High priority will appear here.' },
   },
   vulnerabilities: {
     key: 'vulns', list: 'feedVulnerabilities', mentions: ['cves', 'vendors'], fourth: 'high',
@@ -1920,7 +2078,8 @@ Object.entries(FEED_PAGES).forEach(([view, cfg]) => {
   cfg.allItems = [];
   cfg.filterText = '';
   cfg.panel = createFeedPanel(view, cfg.list, cfg.key + 'Detail', () => (
-    cfg.filterText ? { title: 'Nothing matches the filter', hint: 'Clear the filter to see every item.' } : cfg.empty
+    cfg.filterText ? { title: 'Nothing matches the filter', hint: 'Clear the filter to see every item.' }
+      : (typeof cfg.empty === 'function' ? cfg.empty() : cfg.empty)
   ));
   let debounce = null;
   document.getElementById(cfg.key + 'Filter').addEventListener('input', (e) => {
@@ -1942,7 +2101,7 @@ async function loadFeedPage(view) {
 
 function itemMatches(i, text) {
   if (!text) return true;
-  return [i.title, i.source_name, stripHtml(i.summary || ''), ...i.cves, ...i.ips, ...i.hashes, ...i.vendors, ...i.actors]
+  return [i.title, i.source_name, stripHtml(i.summary || ''), ...i.cves, ...i.ips, ...i.hashes, ...i.vendors, ...i.actors, ...(i.watch_hits || [])]
     .some(v => (v || '').toLowerCase().includes(text));
 }
 
@@ -1956,15 +2115,18 @@ function applyFeedPageFilter(cfg) {
 function renderFeedStats(elId, items, fourth, first = null) {
   const since = unreadSince();
   const dayAgo = Date.now() / 1000 - 86400;
-  const unread = items.filter(i => i.fetched_at > since).length;
+  const unread = items.filter(isUnread).length;
   const capped = items.length >= FEED_PAGE_LIMIT;
   const cells = [
     first || { label: 'Items', value: capped ? `${FEED_PAGE_LIMIT}+` : items.length, note: capped ? `showing the newest ${FEED_PAGE_LIMIT}` : 'newest arrivals first' },
     { label: 'New since you last looked', value: unread, tone: unread ? 'signal' : '', note: unread ? `since ${fmtClock(since)}` : 'nothing new' },
     { label: 'Published in the last 24 hours', value: items.filter(i => effectiveTs(i) >= dayAgo).length, note: 'by published date' },
-    fourth === 'cve'
-      ? { label: 'Mention a CVE', value: items.filter(i => i.cves.length).length, note: `${new Set(items.flatMap(i => i.cves)).size} distinct CVEs` }
-      : { label: 'High severity', value: items.filter(i => i.severity === 'high').length, tone: 'high', note: `of ${items.length} shown` },
+    {
+      cve: { label: 'Mention a CVE', value: items.filter(i => i.cves.length).length, note: `${new Set(items.flatMap(i => i.cves)).size} distinct CVEs` },
+      exploited: { label: 'Exploited', value: items.filter(i => i.kev_cves.length).length, tone: 'high', note: "on CISA's KEV list" },
+      ours: { label: 'Affect our stack', value: items.filter(i => i.watch_hits.length).length, tone: 'signal', note: `of ${items.length} shown` },
+      critical: { label: 'Critical', value: items.filter(i => i.severity === 'critical').length, tone: 'critical', note: 'our stack, exploited or serious' },
+    }[fourth] || { label: 'Critical or high', value: items.filter(i => i.severity === 'critical' || i.severity === 'high').length, tone: 'high', note: `of ${items.length} shown` },
   ];
   document.getElementById(elId).innerHTML = cells.map(c => `
     <div class="kpi static">
@@ -1976,7 +2138,7 @@ function renderFeedStats(elId, items, fourth, first = null) {
 
 const MENTION_HINTS = {
   cves: 'Open this CVE on Indicators', ips: 'Open this IP address on Indicators', hashes: 'Open this hash on Indicators',
-  vendors: 'Open this vendor', actors: 'Open this threat actor',
+  vendors: 'Open this vendor', actors: 'Open this threat actor', watch_hits: 'Show only items that mention this',
 };
 function renderMentions(el, items, fields) {
   const counts = new Map();
@@ -2032,12 +2194,38 @@ function showTagItems(view, name, total, items) {
 
 // -------------------------------------------------------------- settings (0.6.1)
 
-document.querySelectorAll('.settings-nav button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.settings-nav button').forEach(b => b.classList.toggle('active', b === btn));
-    document.getElementById(btn.dataset.target).scrollIntoView({ behavior: 'smooth', block: 'start' });
+// One section at a time; the last one opened is remembered in this browser.
+const SETTINGS_TAB_KEY = 'pantomath-settings-tab';
+const SETTINGS_TAB_LOADERS = { 'set-stack': () => loadStackSettings(), 'set-kev': () => loadKevSettings() };
+function showSettingsTab(id) {
+  if (!document.getElementById(id)) id = 'set-collection';
+  document.querySelectorAll('.settings-main > .settings-card').forEach(c => c.classList.toggle('active', c.id === id));
+  document.querySelectorAll('.settings-nav button').forEach(b => {
+    const on = b.dataset.target === id;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
+  try { localStorage.setItem(SETTINGS_TAB_KEY, id); } catch (e) { /* not remembered */ }
+  if (currentView() === 'settings') SETTINGS_TAB_LOADERS[id]?.();
+}
+function openSettingsTab(id) {
+  try { localStorage.setItem(SETTINGS_TAB_KEY, id); } catch (e) { /* not remembered */ }
+  showSettingsTab(id);
+  navigateTo('settings');
+}
+function refreshActiveSettingsTab() {
+  const active = document.querySelector('.settings-main > .settings-card.active');
+  if (active) SETTINGS_TAB_LOADERS[active.id]?.();
+}
+document.querySelectorAll('.settings-nav button').forEach(btn => {
+  btn.addEventListener('click', () => showSettingsTab(btn.dataset.target));
 });
+(function restoreSettingsTab() {
+  let saved = null;
+  try { saved = localStorage.getItem(SETTINGS_TAB_KEY); } catch (e) { /* default */ }
+  showSettingsTab(saved || 'set-collection');
+})();
+
 // The switches are toggled by their own handlers through the "on" class;
 // keep aria-checked in step so screen readers hear the real state.
 document.querySelectorAll('.toggle-switch').forEach(sw => {
@@ -2071,7 +2259,7 @@ function renderIocTable(rows) {
       <span role="columnheader"><input type="checkbox" id="iocSelectAll" aria-label="Select every indicator on this page"${allSelected ? ' checked' : ''}></span>
       <span role="columnheader">${escapeHtml(IOC_SINGULAR[currentIocType].charAt(0).toUpperCase() + IOC_SINGULAR[currentIocType].slice(1))}</span>
       <span role="columnheader" class="num">Mentions</span><span role="columnheader" class="num">Sources</span>
-      <span role="columnheader">Highest severity</span><span role="columnheader">First seen</span><span role="columnheader">Last seen</span><span></span>
+      <span role="columnheader">Highest priority</span><span role="columnheader">First seen</span><span role="columnheader">Last seen</span><span></span>
     </div>` + rows.map(r => `
     <div class="ioc-row${iocDrilldown && iocDrilldown.type === currentIocType && iocDrilldown.value === r.name ? ' selected' : ''}" role="row" data-value="${escapeAttr(r.name)}">
       <span role="cell"><input type="checkbox" class="ioc-check" data-value="${escapeAttr(r.name)}" aria-label="Select ${escapeAttr(r.name)}"${iocSelection.has(r.name) ? ' checked' : ''}></span>
@@ -2319,24 +2507,24 @@ document.querySelectorAll('#anRange button').forEach(btn => {
 });
 
 function renderVolumeChart(el, days) {
-  const max = Math.max(1, ...days.map(d => d.high + d.medium + d.low));
+  const max = Math.max(1, ...days.map(d => d.critical + d.high + d.medium + d.low));
   const width = days.length * 10;
   const barWidth = days.length > 120 ? 9 : 7;
   const inset = (10 - barWidth) / 2;
   const label = d => new Date(d.date + 'T12:00:00').toLocaleDateString([], { day: 'numeric', month: 'short' });
   const bars = days.map((d, idx) => {
     let y = 100;
-    const segments = [['low', d.low], ['medium', d.medium], ['high', d.high]].map(([sev, n]) => {
+    const segments = [['low', d.low], ['medium', d.medium], ['high', d.high], ['critical', d.critical]].map(([sev, n]) => {
       if (!n) return '';
       const h = (n / max) * 98;
       y -= h;
       return `<rect class="bar-${sev}" x="${idx * 10 + inset}" y="${y.toFixed(2)}" width="${barWidth}" height="${h.toFixed(2)}"></rect>`;
     }).join('');
-    const total = d.high + d.medium + d.low;
-    return `<g><title>${escapeHtml(label(d))}: ${total} published (${d.high} high, ${d.medium} medium, ${d.low} low)</title>` +
+    const total = d.critical + d.high + d.medium + d.low;
+    return `<g><title>${escapeHtml(label(d))}: ${total} published (${d.critical} critical, ${d.high} high, ${d.medium} medium, ${d.low} low)</title>` +
       `<rect x="${idx * 10}" y="0" width="10" height="100" fill="transparent"></rect>${segments}</g>`;
   }).join('');
-  const total = days.reduce((sum, d) => sum + d.high + d.medium + d.low, 0);
+  const total = days.reduce((sum, d) => sum + d.critical + d.high + d.medium + d.low, 0);
   el.innerHTML = `<div class="an-ymax">Busiest day: ${max} item${max === 1 ? '' : 's'}</div>
     <svg viewBox="0 0 ${width} 100" preserveAspectRatio="none" role="img" aria-label="${total} items published over ${days.length} days">${bars}</svg>
     <div class="an-axis"><span>${escapeHtml(label(days[0]))}</span><span>${escapeHtml(label(days[Math.floor(days.length / 2)]))}</span><span>Today</span></div>`;
@@ -2345,11 +2533,11 @@ function renderVolumeChart(el, days) {
 function renderSeverityMix(el, t, p, previous) {
   if (!t.items) { el.innerHTML = '<p class="muted">Nothing was published in this period.</p>'; return; }
   const share = n => Math.round((n / t.items) * 100);
-  el.innerHTML = `<div class="mix-bar" role="img" aria-label="${share(t.high)}% high, ${share(t.medium)}% medium, ${share(t.low)}% low">` +
-    ['high', 'medium', 'low'].map(s => (t[s] ? `<i class="bar-${s}" style="width:${((t[s] / t.items) * 100).toFixed(2)}%"></i>` : '')).join('') +
-    '</div><div class="mix-rows">' + ['high', 'medium', 'low'].map(s => {
+  el.innerHTML = `<div class="mix-bar" role="img" aria-label="${share(t.critical)}% critical, ${share(t.high)}% high, ${share(t.medium)}% medium, ${share(t.low)}% low">` +
+    ['critical', 'high', 'medium', 'low'].map(s => (t[s] ? `<i class="bar-${s}" style="width:${((t[s] / t.items) * 100).toFixed(2)}%"></i>` : '')).join('') +
+    '</div><div class="mix-rows">' + ['critical', 'high', 'medium', 'low'].map(s => {
       const diff = t[s] - p[s];
-      const tone = s === 'high' && diff > 0 ? ' worse' : s === 'high' && diff < 0 ? ' better' : '';
+      const tone = (s === 'high' || s === 'critical') && diff > 0 ? ' worse' : (s === 'high' || s === 'critical') && diff < 0 ? ' better' : '';
       return `<div class="mix-row">
         <span><span class="sev-pill sev-${s}">${s}</span></span>
         <span class="num">${t[s]}<span class="share">${share(t[s])}%</span></span>
@@ -2360,7 +2548,7 @@ function renderSeverityMix(el, t, p, previous) {
 
 function renderTopSources(el, rows, totalItems) {
   if (!rows.length) { el.innerHTML = '<p class="muted">Nothing was published in this period.</p>'; return; }
-  el.innerHTML = '<div class="src-rank head"><span>Source</span><span class="num">Items</span><span class="num">High</span><span>Share of all items</span></div>' +
+  el.innerHTML = '<div class="src-rank head"><span>Source</span><span class="num">Items</span><span class="num" title="Critical or high">Crit./high</span><span>Share of all items</span></div>' +
     rows.map(r => `<div class="src-rank">
       <span class="name" title="${escapeAttr(r.name)}">${escapeHtml(r.name)}</span>
       <span class="num">${r.count}</span>
@@ -2402,6 +2590,479 @@ function renderRankList(el, rows, emptyText) {
     </div>`).join('') + '</div>';
 }
 
+// -------------------------------------------------------------- our stack + KEV (0.7.0)
+
+const STACK_RANGE_WORDS = { 24: 'the last 24 hours', 168: 'the last 7 days', 720: 'the last 30 days', 2160: 'the last 90 days' };
+function renderStackBanner(ov) {
+  const el = document.getElementById('dashStackBanner');
+  if (!el || !ov.affects_us) return;
+  const ours = ov.affects_us, exploited = ov.exploited || { items: 0 };
+  const range = STACK_RANGE_WORDS[ov.hours] || `the last ${ov.hours} hours`;
+  let tone, title, text, action = null;
+  if (!ours.watchlist) {
+    tone = 'setup';
+    title = 'Tell Pantomath what you run';
+    text = "List your vendors, products and systems, and every item that mentions one is marked Affects us. Exploited vulnerabilities are marked from CISA's catalog.";
+    action = ['Set up Our stack', () => openSettingsTab('set-stack')];
+  } else if (ours.items) {
+    tone = ours.exploited ? 'alert' : 'ours';
+    title = `${ours.items} item${ours.items === 1 ? '' : 's'} in ${range} ${ours.items === 1 ? 'affects' : 'affect'} our stack`;
+    text = ours.exploited
+      ? `${ours.exploited} of them ${ours.exploited === 1 ? 'mentions a vulnerability' : 'mention vulnerabilities'} being exploited in real attacks.`
+      : "None of them mention a CVE on CISA's exploited list.";
+    action = ['View', () => navigateTo('affects-us')];
+  } else {
+    tone = 'calm';
+    title = `Nothing in ${range} mentions our stack`;
+    text = exploited.items
+      ? `${exploited.items} other item${exploited.items === 1 ? '' : 's'} mention an exploited vulnerability.`
+      : `Watching ${ours.watchlist} entr${ours.watchlist === 1 ? 'y' : 'ies'} on Our stack.`;
+    if (exploited.items) action = ['View exploited', () => navigateTo('exploited')];
+  }
+  el.className = `stack-banner tone-${tone}`;
+  el.hidden = false;
+  el.innerHTML = `<span class="stack-banner-icon" aria-hidden="true"></span>
+    <div class="stack-banner-text"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(text)}</span></div>
+    ${action ? `<button type="button" class="btn ${tone === 'alert' ? 'btn-danger' : 'btn-primary'}" data-role="go">${escapeHtml(action[0])}</button>` : ''}`;
+  if (action) el.querySelector('[data-role="go"]').onclick = action[1];
+}
+
+document.getElementById('liveOnlyOurs').addEventListener('click', (e) => {
+  liveOnlyOurs = !liveOnlyOurs;
+  e.currentTarget.setAttribute('aria-pressed', String(liveOnlyOurs));
+  loadLiveFeed(1);
+});
+document.getElementById('liveOnlyExploited').addEventListener('click', (e) => {
+  liveOnlyExploited = !liveOnlyExploited;
+  e.currentTarget.setAttribute('aria-pressed', String(liveOnlyExploited));
+  loadLiveFeed(1);
+});
+
+let stackEditingId = null;
+function setStackResult(text, isError = false) {
+  const el = document.getElementById('stackResult');
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+function resetStackForm() {
+  stackEditingId = null;
+  document.getElementById('stackName').value = '';
+  document.getElementById('stackAliases').value = '';
+  document.getElementById('stackSaveBtn').textContent = 'Add';
+  document.getElementById('stackCancelBtn').hidden = true;
+  document.querySelectorAll('.stack-row.editing').forEach(r => r.classList.remove('editing'));
+}
+
+async function loadStackSettings() {
+  const res = await fetch('/api/watchlist');
+  if (!res.ok) return;
+  const entries = await res.json();
+  const list = document.getElementById('stackList');
+  list.innerHTML = entries.length
+    ? '<div class="stack-row stack-head"><span>Name</span><span>Also matches</span><span class="num">Items</span><span></span></div>' +
+      entries.map(e => `<div class="stack-row${e.id === stackEditingId ? ' editing' : ''}" data-id="${escapeAttr(e.id)}">
+        <span class="stack-name">${escapeHtml(e.name)}</span>
+        <span class="stack-aliases">${e.aliases ? escapeHtml(e.aliases.split(',').join(', ')) : '<span class="muted">—</span>'}</span>
+        <span class="num" title="Stored items that mention it">${e.items}</span>
+        <span class="stack-actions">
+          <button type="button" class="row-icon" data-action="edit" aria-label="Edit ${escapeAttr(e.name)}" title="Edit">${EDIT_ICON}</button>
+          <button type="button" class="row-icon danger" data-action="delete" aria-label="Remove ${escapeAttr(e.name)}" title="Remove">${TRASH_ICON}</button>
+        </span>
+      </div>`).join('')
+    : '<div class="card-empty"><strong>Nothing on the list yet</strong>Add what you run: firewalls, switches and routers, hypervisors, storage, remote access, UPS and cooling management, and the software on top.</div>';
+  list.querySelectorAll('[data-action="edit"]').forEach(btn => {
+    btn.onclick = () => {
+      const entry = entries.find(e => e.id === btn.closest('.stack-row').dataset.id);
+      stackEditingId = entry.id;
+      document.getElementById('stackName').value = entry.name;
+      document.getElementById('stackAliases').value = entry.aliases ? entry.aliases.split(',').join(', ') : '';
+      document.getElementById('stackSaveBtn').textContent = 'Save changes';
+      document.getElementById('stackCancelBtn').hidden = false;
+      list.querySelectorAll('.stack-row').forEach(r => r.classList.toggle('editing', r.dataset.id === entry.id));
+      document.getElementById('stackName').focus();
+    };
+  });
+  list.querySelectorAll('[data-action="delete"]').forEach(btn => {
+    btn.onclick = async () => {
+      const entry = entries.find(e => e.id === btn.closest('.stack-row').dataset.id);
+      if (!confirm(`Remove "${entry.name}" from Our stack? Items that only matched it lose the Affects us mark.`)) return;
+      const r = await fetch('/api/watchlist/' + entry.id, { method: 'DELETE' });
+      if (r.ok) {
+        if (stackEditingId === entry.id) resetStackForm();
+        const out = await r.json();
+        setStackResult(`Removed. ${out.items_marked} stored item${out.items_marked === 1 ? '' : 's'} now affect our stack.`);
+        loadStackSettings();
+        refreshShell();
+      }
+    };
+  });
+  loadStackSuggestions(entries);
+}
+
+async function loadStackSuggestions(entries) {
+  const el = document.getElementById('stackSuggest');
+  const tags = await (await fetch('/api/tags?type=vendor&limit=40')).json();
+  const have = new Set(entries.flatMap(e => [e.name, ...(e.aliases ? e.aliases.split(',') : [])]).map(x => x.toLowerCase()));
+  const picks = tags.filter(t => !have.has(t.name.toLowerCase())).slice(0, 12);
+  el.innerHTML = picks.length
+    ? '<span class="muted">Vendors named in your items:</span>' + picks.map(t => `<button type="button" class="mention-chip" data-name="${escapeAttr(t.name)}" title="Put this name in the form">+ ${escapeHtml(t.name)}<span class="count">${t.count}</span></button>`).join('')
+    : '';
+  el.querySelectorAll('[data-name]').forEach(chip => {
+    chip.onclick = () => {
+      resetStackForm();
+      document.getElementById('stackName').value = chip.dataset.name;
+      document.getElementById('stackAliases').focus();
+    };
+  });
+}
+
+async function saveStackEntry() {
+  const name = document.getElementById('stackName').value.trim();
+  const aliases = document.getElementById('stackAliases').value;
+  if (!name) { setStackResult('Give the entry a name.', true); document.getElementById('stackName').focus(); return; }
+  const btn = document.getElementById('stackSaveBtn');
+  btn.disabled = true;
+  const res = await fetch(stackEditingId ? '/api/watchlist/' + stackEditingId : '/api/watchlist', {
+    method: stackEditingId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, aliases }),
+  });
+  btn.disabled = false;
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) { setStackResult(out.detail || "Couldn't save that entry.", true); return; }
+  setStackResult(`Saved. ${out.items_marked} stored item${out.items_marked === 1 ? '' : 's'} now affect our stack.`);
+  resetStackForm();
+  loadStackSettings();
+  refreshShell();
+}
+document.getElementById('stackSaveBtn').addEventListener('click', saveStackEntry);
+document.getElementById('stackCancelBtn').addEventListener('click', () => { resetStackForm(); setStackResult(''); });
+['stackName', 'stackAliases'].forEach(id => document.getElementById(id).addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveStackEntry(); }
+}));
+
+async function loadKevSettings(status = null) {
+  if (!status) {
+    const res = await fetch('/api/kev/status');
+    if (!res.ok) return;
+    status = await res.json();
+  }
+  document.getElementById('kevToggle').classList.toggle('on', status.enabled);
+  document.getElementById('kevStatusLabel').textContent = status.count
+    ? `${status.count.toLocaleString()} exploited vulnerabilities in the catalog`
+    : 'No catalog downloaded yet';
+  const hint = document.getElementById('kevStatusHint');
+  hint.classList.toggle('error', !!status.error);
+  if (status.error) {
+    hint.textContent = `The last update failed ${timeAgo(status.checked_at)}: ${status.error}.` +
+      (status.count ? ` Still using the copy from ${timeAgo(status.updated_at)}.` : '');
+  } else if (status.updated_at) {
+    hint.textContent = `Updated ${timeAgo(status.updated_at)}. ${status.enabled ? 'Checked again once a day.' : 'Automatic updates are off.'}`;
+  } else {
+    hint.textContent = status.enabled ? 'The first download starts a few minutes after Pantomath starts, or press Update now.' : 'Turned off.';
+  }
+  const url = document.getElementById('kevUrl');
+  if (document.activeElement !== url) url.value = status.url || '';
+  url.placeholder = status.default_url;
+}
+
+document.getElementById('kevToggle').addEventListener('click', async (e) => {
+  const next = !e.currentTarget.classList.contains('on');
+  const res = await fetch('/api/kev/settings', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next }),
+  });
+  if (!res.ok) return;
+  const status = await res.json();
+  loadKevSettings(status);
+  refreshShell();
+  if (next && !status.count) document.getElementById('kevRefreshBtn').click();
+});
+document.getElementById('kevRefreshBtn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+  const res = await fetch('/api/kev/refresh', { method: 'POST' });
+  btn.disabled = false;
+  btn.textContent = 'Update now';
+  if (!res.ok) return;
+  const status = await res.json();
+  loadKevSettings(status);
+  showToast(status.error ? 'The update failed. See the reason under the switch.' : 'Catalog updated');
+  refreshShell();
+});
+document.getElementById('kevUrlSaveBtn').addEventListener('click', async () => {
+  const out = document.getElementById('kevUrlResult');
+  const res = await fetch('/api/kev/settings', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: document.getElementById('kevUrl').value.trim() }),
+  });
+  const body = await res.json().catch(() => ({}));
+  out.classList.toggle('error', !res.ok);
+  if (!res.ok) { out.textContent = body.detail || "Couldn't save the address."; return; }
+  out.textContent = body.url ? 'Saved. Press Update now to download from this address.' : "Saved. Using CISA's official feed.";
+  loadKevSettings(body);
+});
+
+// -------------------------------------------------------------- sign-in (0.8.0)
+
+let authStatus = null;
+let signinMode = 'login';
+const EYE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+
+async function fetchAuthStatus() {
+  try {
+    const res = await fetch('/api/auth/status');
+    return res.ok ? await res.json() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function signinError(message, field = 'password') {
+  const el = document.getElementById('signinError');
+  el.textContent = message || '';
+  el.hidden = !message;
+  document.getElementById('signinPasswordBox').classList.toggle('invalid', !!message && field === 'password');
+  document.getElementById('signinCodeBox').classList.toggle('invalid', !!message && field === 'code');
+  if (message) {
+    const card = document.getElementById('signinCard');
+    card.classList.remove('shake');
+    void card.offsetWidth;  // restart the animation
+    card.classList.add('shake');
+  }
+}
+
+function setSigninBusy(busy, label) {
+  const btn = document.getElementById('signinSubmit');
+  btn.disabled = busy;
+  btn.innerHTML = busy ? `<span class="spinner" aria-hidden="true"></span>${escapeHtml(label)}` : escapeHtml(label);
+}
+
+function showSignIn(status, reason = null) {
+  if (status) authStatus = status;
+  document.body.classList.remove('booting');
+  document.body.classList.add('signed-out');
+  document.getElementById('signin').hidden = false;
+  setSigninMode((authStatus || {}).setup_needed ? 'setup' : 'login', reason);
+}
+
+// Three modes on one card: first-run setup (needs the setup code from the
+// server), sign in, and reset with the recovery code.
+const SIGNIN_MODES = {
+  setup: {
+    title: 'Welcome to Pantomath', button: 'Create and sign in', remember: true,
+    sub: 'Create the Settings password. It manages sources and settings, and signs you in until you add a team password for everyone else.',
+    code: 'Setup code', codeHint: 'Printed at the end of the installation. Show it again on the server with <code>sudo pantomath-admin setup-code</code>.',
+    password: 'New Settings password (at least 8 characters)', confirm: true, link: null,
+  },
+  login: {
+    title: 'Sign in', button: 'Sign in', remember: false,
+    code: null, password: 'Password', confirm: false, link: 'Forgot the Settings password?',
+  },
+  recover: {
+    title: 'Reset the Settings password', button: 'Reset and sign in', remember: false,
+    sub: 'Enter the recovery code you saved when Pantomath was set up. It works once, and you get a new one straight away.',
+    code: 'Recovery code', codeHint: 'Lost that too? On the server, run <code>sudo pantomath-admin reset-settings-password</code>.',
+    password: 'New Settings password (at least 8 characters)', confirm: true, link: 'Back to sign in',
+  },
+};
+
+function setSigninMode(mode, reason = null) {
+  const st = authStatus || {};
+  const m = SIGNIN_MODES[mode];
+  signinMode = mode;
+  document.getElementById('signinForm').hidden = false;
+  document.getElementById('signinRecovery').hidden = true;
+  document.getElementById('signinTitle').textContent = m.title;
+  document.getElementById('signinSub').textContent = m.sub
+    || (reason === 'expired' ? 'Your session has ended. Sign in again to carry on where you were.'
+      : st.team_password ? 'Use the team password. Administrators can use the Settings password.'
+      : 'Pantomath now asks everyone to sign in. Until a team password is added in Settings, use the Settings password.');
+  document.getElementById('signinCodeField').hidden = !m.code;
+  if (m.code) {
+    document.getElementById('signinCodeLabel').textContent = m.code;
+    document.getElementById('signinCodeHint').innerHTML = m.codeHint;
+    document.getElementById('signinCode').value = '';
+  }
+  document.getElementById('signinPasswordLabel').textContent = m.password;
+  document.getElementById('signinPassword').autocomplete = m.confirm ? 'new-password' : 'current-password';
+  document.getElementById('signinPassword').value = '';
+  document.getElementById('signinConfirm').value = '';
+  document.getElementById('signinConfirmField').hidden = !m.confirm;
+  document.getElementById('signinRemember').checked = m.remember;
+  const link = document.getElementById('signinModeLink');
+  link.hidden = !m.link;
+  if (m.link) link.textContent = m.link;
+  setSigninBusy(false, m.button);
+  signinError('');
+  setTimeout(() => document.getElementById(m.code ? 'signinCode' : 'signinPassword').focus(), 60);
+}
+document.getElementById('signinModeLink').addEventListener('click', () => setSigninMode(signinMode === 'recover' ? 'login' : 'recover'));
+
+document.querySelectorAll('.signin-reveal').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.for);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.setAttribute('aria-pressed', String(show));
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    btn.innerHTML = show ? EYE_OFF_ICON : EYE_ICON;
+    input.focus();
+  });
+});
+document.getElementById('signinPassword').addEventListener('input', () => {
+  if (!document.getElementById('signinError').hidden) signinError('');
+});
+
+document.getElementById('signinForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const m = SIGNIN_MODES[signinMode];
+  const code = document.getElementById('signinCode').value.trim();
+  const password = document.getElementById('signinPassword').value;
+  const remember = document.getElementById('signinRemember').checked;
+  if (m.code && !code) { signinError(`Enter the ${m.code.toLowerCase()}.`, 'code'); document.getElementById('signinCode').focus(); return; }
+  if (!password) { signinError('Enter the password.'); return; }
+  if (m.confirm && password.length < 8) { signinError('Use at least 8 characters.'); return; }
+  if (m.confirm && password !== document.getElementById('signinConfirm').value) { signinError("The two passwords don't match."); return; }
+  const request = {
+    setup: ['/api/auth/setup', { password, setup_code: code, remember }],
+    login: ['/api/auth/login', { password, remember }],
+    recover: ['/api/auth/recover', { recovery_code: code, new_password: password, remember }],
+  }[signinMode];
+  setSigninBusy(true, { setup: 'Setting up…', login: 'Signing in…', recover: 'Resetting…' }[signinMode]);
+  let res;
+  try {
+    res = await fetch(request[0], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request[1]) });
+  } catch (err) {
+    setSigninBusy(false, m.button);
+    signinError("Pantomath can't be reached. Check the connection and try again.");
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 409) { showSignIn(await fetchAuthStatus()); signinError(body.detail || ''); return; }
+    setSigninBusy(false, m.button);
+    signinError(body.detail || 'That didn’t work. Try again.', /code/i.test(body.detail || '') ? 'code' : 'password');
+    return;
+  }
+  if (body.settings_token) setSettingsToken(body.settings_token);
+  if (body.recovery_code) {
+    document.getElementById('signinForm').hidden = true;
+    document.getElementById('signinRecovery').hidden = false;
+    document.getElementById('signinRecoveryTitle').textContent = signinMode === 'recover' ? 'Save your new recovery code' : 'Save your recovery code';
+    document.getElementById('signinRecoveryCode').textContent = body.recovery_code;
+    return;
+  }
+  setSigninBusy(true, 'Signed in');
+  location.reload();
+});
+document.getElementById('signinCopyCode').addEventListener('click', () => copyText(document.getElementById('signinRecoveryCode').textContent, 'the recovery code'));
+document.getElementById('signinSaved').addEventListener('change', (e) => { document.getElementById('signinContinue').disabled = !e.target.checked; });
+document.getElementById('signinContinue').addEventListener('click', () => location.reload());
+
+document.getElementById('signOutBtn').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  setSettingsToken(null);
+  location.reload();
+});
+
+// -------------------------------------------------------------- settings: security (0.8.0)
+
+const DEVICE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+const PHONE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18h2"/></svg>';
+const KEY_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M14 9l2 2"/></svg>';
+
+async function loadSecuritySettings() {
+  const [statusRes, sessionsRes] = await Promise.all([fetch('/api/auth/status'), fetch('/api/auth/sessions')]);
+  if (!sessionsRes.ok) return;
+  const status = await statusRes.json();
+  const { devices, api_keys: keys } = await sessionsRes.json();
+  document.getElementById('teamPwHint').textContent = status.team_password
+    ? "Set. People sign in with it to view Pantomath; it can't change settings."
+    : 'Not set, so only the Settings password can sign in, and everyone who views Pantomath can also change it. Set a team password for viewers.';
+  document.getElementById('teamPwBtn').textContent = status.team_password ? 'Change' : 'Set team password';
+  document.getElementById('teamPwRemove').hidden = !status.team_password;
+
+  document.getElementById('deviceList').innerHTML = devices.map(d => {
+    const phone = /iPhone|Android|iPad/.test(d.label);
+    const via = d.role === 'admin' ? 'Settings password' : 'team password';
+    return `<div class="device-row">
+      <span class="device-icon">${phone ? PHONE_ICON : DEVICE_ICON}</span>
+      <div><div class="device-name">${escapeHtml(d.label || 'Browser')}${d.current ? '<span class="badge-current">This device</span>' : ''}</div>
+        <div class="device-sub">Signed in with the ${via}, ${d.remember ? 'remembered for 90 days' : 'until the browser closes'}. Active ${escapeHtml(timeAgo(d.last_seen))}${d.ip ? `, from ${escapeHtml(d.ip)}` : ''}.</div></div>
+      <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(d.id)}" data-current="${d.current ? 1 : 0}">Sign out</button>
+    </div>`;
+  }).join('');
+  document.getElementById('apiKeyList').innerHTML = keys.map(k => `<div class="device-row">
+      <span class="device-icon">${KEY_ICON}</span>
+      <div><div class="device-name">${escapeHtml(k.label)}</div>
+        <div class="device-sub">Created ${escapeHtml(timeAgo(k.created_at))}, last used ${escapeHtml(timeAgo(k.last_seen))}.</div></div>
+      <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(k.id)}">Revoke</button>
+    </div>`).join('');
+  document.querySelectorAll('#deviceList [data-revoke], #apiKeyList [data-revoke]').forEach(btn => {
+    btn.onclick = async () => {
+      const own = btn.dataset.current === '1';
+      if (own && !confirm('Sign out this device?')) return;
+      await fetch('/api/auth/sessions/' + btn.dataset.revoke, { method: 'DELETE' });
+      if (own) { setSettingsToken(null); location.reload(); return; }
+      loadSecuritySettings();
+    };
+  });
+}
+SETTINGS_TAB_LOADERS['set-security'] = () => loadSecuritySettings();
+
+function toggleTeamPwForm(open) {
+  document.getElementById('teamPwForm').hidden = !open;
+  document.getElementById('teamPw1').value = '';
+  document.getElementById('teamPw2').value = '';
+  if (open) document.getElementById('teamPw1').focus();
+}
+document.getElementById('teamPwBtn').addEventListener('click', () => { document.getElementById('teamPwResult').textContent = ''; toggleTeamPwForm(true); });
+document.getElementById('teamPwCancel').addEventListener('click', () => toggleTeamPwForm(false));
+document.getElementById('teamPwSave').addEventListener('click', async () => {
+  const out = document.getElementById('teamPwResult');
+  const pw = document.getElementById('teamPw1').value;
+  out.classList.add('error');
+  if (pw.length < 8) { out.textContent = 'Use at least 8 characters.'; return; }
+  if (pw !== document.getElementById('teamPw2').value) { out.textContent = "The two passwords don't match."; return; }
+  const res = await fetch('/api/auth/team-password', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { out.textContent = body.detail || "Couldn't save the password."; return; }
+  toggleTeamPwForm(false);
+  document.getElementById('teamPwForm').hidden = false;
+  document.querySelector('#teamPwForm .stack-form').hidden = true;
+  out.classList.remove('error');
+  out.textContent = 'Saved. Anyone signed in with the previous team password has been signed out.';
+  setTimeout(() => { document.getElementById('teamPwForm').hidden = true; document.querySelector('#teamPwForm .stack-form').hidden = false; out.textContent = ''; }, 6000);
+  loadSecuritySettings();
+});
+document.getElementById('teamPwRemove').addEventListener('click', async () => {
+  if (!confirm('Remove the team password? Everyone signed in with it is signed out, and only the Settings password can sign in.')) return;
+  await fetch('/api/auth/team-password', { method: 'DELETE' });
+  loadSecuritySettings();
+});
+document.getElementById('signOutOthersBtn').addEventListener('click', async () => {
+  if (!confirm('Sign out every other device, including wall screens? They will need to sign in again.')) return;
+  const res = await fetch('/api/auth/sessions/sign-out-others', { method: 'POST' });
+  if (res.ok) { const out = await res.json(); showToast(`Signed out ${out.signed_out} device${out.signed_out === 1 ? '' : 's'}`); }
+  loadSecuritySettings();
+});
+document.getElementById('apiKeyCreateBtn').addEventListener('click', async () => {
+  const label = document.getElementById('apiKeyLabel').value.trim();
+  const box = document.getElementById('apiKeyNew');
+  if (!label) { document.getElementById('apiKeyLabel').focus(); return; }
+  const res = await fetch('/api/auth/api-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(body.detail || "Couldn't create the key"); return; }
+  document.getElementById('apiKeyLabel').value = '';
+  box.hidden = false;
+  box.innerHTML = `<strong>Key for ${escapeHtml(label)}</strong><code>${escapeHtml(body.key)}</code>
+    <button type="button" class="btn btn-sm" id="apiKeyCopy">Copy key</button>
+    <span class="muted"> Copy it now: Pantomath keeps only a fingerprint and can't show it again.</span>`;
+  document.getElementById('apiKeyCopy').onclick = () => copyText(body.key, 'the API key');
+  loadSecuritySettings();
+});
+
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(proto + '//' + location.host + '/ws');
@@ -2410,9 +3071,10 @@ function connectWs() {
     wsEverOpened = true;
     renderConnStatus();
   };
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     wsOpen = false;
     renderConnStatus();
+    if (event.code === 4401) { showSignIn(null, 'expired'); return; }  // signed out: stop reconnecting
     setTimeout(connectWs, 2000);
   };
   ws.onmessage = (event) => {
@@ -2436,6 +3098,15 @@ function connectWs() {
 
 (async function init() {
   initThemeControls();
+  const status = await fetchAuthStatus();
+  if (!status || !status.signed_in) {
+    showSignIn(status || {});
+    if (!status) signinError("Pantomath can't be reached right now. Check the connection, then sign in.");
+    return;
+  }
+  authStatus = status;
+  document.body.classList.remove('booting');
+  document.getElementById('signOutBtn').hidden = !!status.open;
   await initNotificationControls();
   try { await loadSources(); } catch (e) { console.warn('loadSources() failed during boot — continuing anyway:', e); }
   const initial = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard';

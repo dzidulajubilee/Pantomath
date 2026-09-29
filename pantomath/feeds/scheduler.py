@@ -15,6 +15,7 @@ import time
 from pantomath.alerts.dispatcher import dispatch_webhooks_for_items
 from pantomath.connectors.registry import get_connector
 from pantomath.database.sqlite import get_db
+from pantomath.intelligence.kev import kev_due, refresh_kev
 
 RETENTION_CHECK_INTERVAL = 3600  # seconds
 
@@ -25,6 +26,8 @@ class Scheduler:
         self.check_interval = check_interval
         self._running = False
         self._last_retention_check = 0
+        self._last_kev_check = 0.0
+        self._kev_task = None
 
     async def start(self):
         self._running = True
@@ -38,6 +41,7 @@ class Scheduler:
             try:
                 await self.poll_all()
                 await self._maybe_run_retention()
+                await self._maybe_refresh_kev()
             except Exception as e:
                 print(f"[scheduler] error: {e}")
             await asyncio.sleep(self.check_interval)
@@ -85,6 +89,36 @@ class Scheduler:
                 (now, f"error: {str(e)[:100]}", int((time.monotonic() - started) * 1000), now, src["id"]),
             )
             await db.commit()
+
+    async def _maybe_refresh_kev(self):
+        """
+        Keeps the CISA KEV catalog current: once a day after a successful
+        download, hourly after a failure, never when turned off in Settings.
+        The download runs as a background task so a slow server can't hold
+        up feed polling.
+        """
+        now = time.time()
+        if now - self._last_kev_check < 300 or (self._kev_task and not self._kev_task.done()):
+            return
+        self._last_kev_check = now
+        db = await get_db()
+        try:
+            due = await kev_due(db, now)
+        finally:
+            await db.close()
+        if due:
+            self._kev_task = asyncio.create_task(self._refresh_kev())
+
+    async def _refresh_kev(self):
+        db = await get_db()
+        try:
+            status = await refresh_kev(db)
+            if status["error"]:
+                print(f"[scheduler] KEV catalog update failed: {status['error']}")
+        except Exception as e:
+            print(f"[scheduler] KEV catalog update error: {e}")
+        finally:
+            await db.close()
 
     async def _maybe_run_retention(self):
         now = time.time()

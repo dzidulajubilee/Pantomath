@@ -6,7 +6,7 @@ A rule with every condition unset matches every new item, which is a
 legitimate use case ("send me everything").
 """
 
-SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1}
+SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
 def matches_webhook(webhook: dict, item: dict) -> bool:
@@ -27,5 +27,11 @@ def matches_webhook(webhook: dict, item: dict) -> bool:
         required_rank = SEVERITY_RANK.get(min_severity, 0)
         if item_rank < required_rank:
             return False
+
+    # 0.7.0: "only items that affect our stack" / "only exploited vulnerabilities"
+    if webhook.get("only_affects_us") and not item.get("watch_hits"):
+        return False
+    if webhook.get("only_exploited") and not item.get("kev_cves"):
+        return False
 
     return True

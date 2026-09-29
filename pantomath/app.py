@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from pantomath import __version__
-from pantomath.api.routes import broadcast, make_poll_now_route, protected_router, router
+from pantomath.api.routes import auth_router, broadcast, make_poll_now_route, protected_router, router
 from pantomath.database.sqlite import init_db
 from pantomath.feeds.scheduler import Scheduler
 
@@ -19,6 +19,17 @@ scheduler = Scheduler(broadcast)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # First run (0.8.1): make sure the setup code exists; never log the code itself.
+    from pantomath.auth import setup_code
+    from pantomath.database.sqlite import get_db
+
+    db = await get_db()
+    try:
+        if await setup_code.ensure_setup_code(db):
+            print("[pantomath] Not set up yet. Open the dashboard and enter the setup code; "
+                  "show it on this server with: sudo pantomath-admin setup-code")
+    finally:
+        await db.close()
     await scheduler.start()
     yield
     scheduler.stop()
@@ -26,6 +37,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Pantomath", lifespan=lifespan)
 
+app.include_router(auth_router)
 app.include_router(router)
 app.include_router(protected_router)
 make_poll_now_route(scheduler)  # registers /api/sources/{id}/poll(-all) on protected_router

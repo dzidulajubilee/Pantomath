@@ -14,7 +14,78 @@
   })();
 </script>
 </head>
-<body>
+<body class="booting">
+<div class="signin" id="signin" hidden>
+  <section class="signin-hero" aria-hidden="true">
+    <div class="signin-grid"></div>
+    <div class="radar">
+      <div class="radar-ring r1"></div><div class="radar-ring r2"></div><div class="radar-ring r3"></div>
+      <div class="radar-sweep"></div>
+      <span class="blip b1"></span><span class="blip b2"></span><span class="blip b3"></span><span class="blip b4"></span>
+      <img class="radar-core" src="/static/assets/icons/pantomath.svg?v={{CACHEBUST}}" alt="">
+    </div>
+    <div class="hero-copy">
+      <p class="hero-kicker">Self-hosted threat intelligence</p>
+      <h2 class="hero-title">Know what's happening.<br>Know what affects you.</h2>
+      <ul class="hero-points">
+        <li><span class="hp-dot live"></span>Live feeds from the sources you choose</li>
+        <li><span class="hp-dot exploited"></span>Exploited vulnerabilities from CISA, every day</li>
+        <li><span class="hp-dot ours"></span>Matched against what you actually run</li>
+      </ul>
+    </div>
+  </section>
+  <main class="signin-main">
+    <div class="signin-card" id="signinCard">
+      <div class="signin-brand"><img src="/static/assets/icons/pantomath.svg?v={{CACHEBUST}}" alt="" width="34" height="34"><span>PANTOMATH</span></div>
+      <form class="signin-form" id="signinForm" novalidate>
+        <h1 class="signin-title" id="signinTitle">Sign in</h1>
+        <p class="signin-sub" id="signinSub">Use the team password. Administrators can use the Settings password.</p>
+        <div class="signin-field" id="signinCodeField" hidden>
+          <label for="signinCode" id="signinCodeLabel">Setup code</label>
+          <div class="signin-input" id="signinCodeBox">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M14 9l2 2"/></svg>
+            <input type="text" id="signinCode" class="code-input" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX">
+          </div>
+          <p class="signin-hint" id="signinCodeHint"></p>
+        </div>
+        <div class="signin-field">
+          <label for="signinPassword" id="signinPasswordLabel">Password</label>
+          <div class="signin-input" id="signinPasswordBox">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+            <input type="password" id="signinPassword" autocomplete="current-password" spellcheck="false" required>
+            <button type="button" class="signin-reveal" data-for="signinPassword" aria-label="Show password" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+        </div>
+        <div class="signin-field" id="signinConfirmField" hidden>
+          <label for="signinConfirm">Type it again</label>
+          <div class="signin-input">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+            <input type="password" id="signinConfirm" autocomplete="new-password" spellcheck="false">
+          </div>
+        </div>
+        <label class="signin-remember"><input type="checkbox" id="signinRemember"><span><strong>Remember this device</strong> for 90 days. For the wall screen and your own computer, not shared machines.</span></label>
+        <p class="signin-error" id="signinError" role="alert" hidden></p>
+        <button type="submit" class="signin-submit" id="signinSubmit">Sign in</button>
+        <button type="button" class="signin-link" id="signinModeLink">Forgot the Settings password?</button>
+      </form>
+      <div class="signin-recovery" id="signinRecovery" hidden>
+        <h1 class="signin-title" id="signinRecoveryTitle">Save your recovery code</h1>
+        <p class="signin-sub">If the Settings password is ever lost, this code resets it. It's shown only this once, so store it in your password manager.</p>
+        <div class="recovery-code" id="signinRecoveryCode"></div>
+        <button type="button" class="btn" id="signinCopyCode">Copy code</button>
+        <label class="signin-remember"><input type="checkbox" id="signinSaved"><span>I've stored the code somewhere safe</span></label>
+        <button type="button" class="signin-submit" id="signinContinue" disabled>Continue to Pantomath</button>
+      </div>
+      <details class="signin-help">
+        <summary>Can't sign in?</summary>
+        <p>Ask whoever manages Pantomath for the team password.</p>
+        <p>Lost the Settings password? Use the recovery code you saved at setup ("Forgot the Settings password?" above), or on the server run <code>sudo pantomath-admin reset-settings-password</code> to set a new one.</p>
+        <p>Setting Pantomath up for the first time? The setup code was printed at the end of the installation; <code>sudo pantomath-admin setup-code</code> shows it again.</p>
+      </details>
+    </div>
+    <p class="signin-foot">Pantomath {{CACHEBUST}}</p>
+  </main>
+</div>
 
 <header class="topbar">
   <button type="button" class="menu-btn" id="navToggle" aria-label="Open menu" aria-controls="navRail" aria-expanded="false">
@@ -36,6 +107,7 @@
       <span class="conn-dot"></span><span class="conn-label" id="connLabel">Connecting</span><span class="conn-age" id="connAge"></span>
     </div>
     <button class="theme-toggle" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle light and dark theme">&#9789;</button>
+    <button class="theme-toggle signout-btn" id="signOutBtn" title="Sign out" aria-label="Sign out"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l5-5-5-5"/><path d="M15 12H4"/></svg></button>
     <button class="btn btn-primary" id="addSourceBtnHeader">+ Add source</button>
   </div>
 </header>
@@ -45,8 +117,10 @@
     <div class="nav-group">
       <div class="nav-group-label">Overview</div>
       <button class="nav-item" data-view="dashboard"><span class="glyph icon-dashboard"></span><span class="nav-label">Dashboard</span></button>
+      <button class="nav-item" data-view="affects-us"><span class="glyph icon-affects-us"></span><span class="nav-label">Affects us</span><span class="nav-count" id="navAffectsCount" hidden></span></button>
+      <button class="nav-item" data-view="exploited"><span class="glyph icon-exploited"></span><span class="nav-label">Exploited</span><span class="nav-count nav-count-alert" id="navExploitedCount" hidden></span></button>
       <button class="nav-item" data-view="live-feed"><span class="glyph icon-live-feed"></span><span class="nav-label">Live feed</span><span class="nav-count" id="navNewCount" hidden></span></button>
-      <button class="nav-item" data-view="critical"><span class="glyph icon-critical"></span><span class="nav-label">High severity</span></button>
+      <button class="nav-item" data-view="critical"><span class="glyph icon-critical"></span><span class="nav-label">Critical &amp; high</span></button>
     </div>
     <div class="nav-group">
       <div class="nav-group-label">Investigate</div>
@@ -86,6 +160,7 @@
           <button type="button" data-hours="2160" aria-pressed="false">90 d</button>
         </div>
       </div>
+      <div class="stack-banner" id="dashStackBanner" role="status" hidden></div>
       <div class="kpi-strip" id="dashKpis" aria-label="Summary"></div>
       <div class="dash-grid">
         <div class="dash-main">
@@ -99,7 +174,7 @@
           <section class="card" aria-labelledby="daysTitle">
             <div class="card-head">
               <div><h3 id="daysTitle">Published per day</h3><div class="card-sub">Last 7 days, by severity</div></div>
-              <div class="legend" aria-hidden="true"><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
+              <div class="legend" aria-hidden="true"><span><i class="bar-critical"></i>Critical</span><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
             </div>
             <div class="day-chart" id="dashDays"></div>
           </section>
@@ -117,6 +192,56 @@
     </section>
 
     <!-- LIVE FEED -->
+    <section class="view" id="view-affects-us">
+      <div class="view-head">
+        <div><h2>Affects us</h2><div class="desc">Items that mention something on your stack (Settings, Our stack), newest arrivals first.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="oursStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="oursMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="oursFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="oursFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedOurs" data-density="compact" role="list" aria-label="Affects us items"></div>
+          <p class="list-note" id="oursNote"></p>
+        </div>
+        <aside class="detail-panel" id="oursDetail" aria-label="Item details" hidden></aside>
+      </div>
+    </section>
+
+    <section class="view" id="view-exploited">
+      <div class="view-head">
+        <div><h2>Exploited</h2><div class="desc">Items that mention a CVE on CISA's Known Exploited Vulnerabilities catalog: confirmed attacks, not a keyword guess.</div></div>
+        <div class="view-actions">
+          <div class="seg density-seg" role="group" aria-label="Row density">
+            <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
+            <button type="button" data-density="compact" aria-pressed="true">Compact</button>
+          </div>
+        </div>
+      </div>
+      <div class="kpi-strip kpi-strip-4 feed-stats" id="exploitedStats" aria-label="Summary"></div>
+      <div class="mentions-bar" id="exploitedMentions"></div>
+      <div class="filter-row feed-filter">
+        <label for="exploitedFilter" class="visually-hidden">Filter this list</label>
+        <input type="search" class="text-input grow" id="exploitedFilter" placeholder="Filter by title, source, CVE, vendor or actor">
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="feed-table" id="feedExploited" data-density="compact" role="list" aria-label="Exploited items"></div>
+          <p class="list-note" id="exploitedNote"></p>
+        </div>
+        <aside class="detail-panel" id="exploitedDetail" aria-label="Item details" hidden></aside>
+      </div>
+    </section>
+
     <section class="view" id="view-live-feed">
       <div class="view-head">
         <div><h2>Live feed</h2><div class="desc" id="liveSubtitle">Everything Pantomath has collected, newest arrivals first.</div></div>
@@ -132,10 +257,15 @@
         <div class="filter-row">
           <label for="searchInput" class="visually-hidden">Filter the feed</label>
           <input type="search" class="text-input grow" id="searchInput" placeholder="Filter by keyword, CVE, vendor or actor">
-          <div class="sev-toggles" id="sevToggles" role="group" aria-label="Severity">
+          <div class="sev-toggles" id="sevToggles" role="group" aria-label="Priority">
+            <button type="button" class="sev-toggle active" data-sev="critical">Critical</button>
             <button type="button" class="sev-toggle active" data-sev="high">High</button>
             <button type="button" class="sev-toggle active" data-sev="medium">Medium</button>
             <button type="button" class="sev-toggle active" data-sev="low">Low</button>
+          </div>
+          <div class="flag-toggles" role="group" aria-label="Show only">
+            <button type="button" class="flag-toggle" id="liveOnlyOurs" aria-pressed="false">Affects us</button>
+            <button type="button" class="flag-toggle" id="liveOnlyExploited" aria-pressed="false">Exploited</button>
           </div>
         </div>
         <div class="filter-row">
@@ -164,7 +294,7 @@
     <!-- CATEGORY-FILTERED VIEWS (Critical / Vulnerabilities / Malware / Ransomware) -->
     <section class="view" id="view-critical">
       <div class="view-head">
-        <div><h2>High severity</h2><div class="desc">Everything scored high severity, newest arrivals first.</div></div>
+        <div><h2>Critical and high</h2><div class="desc">Items with Critical or High priority, newest arrivals first. Critical means something on Our stack with an exploited or serious flaw.</div></div>
         <div class="view-actions">
           <div class="seg density-seg" role="group" aria-label="Row density">
             <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
@@ -180,7 +310,7 @@
       </div>
       <div class="live-layout">
         <div class="live-list-wrap">
-          <div class="feed-table" id="feedCritical" data-density="compact" role="list" aria-label="High severity items"></div>
+          <div class="feed-table" id="feedCritical" data-density="compact" role="list" aria-label="Critical and high items"></div>
           <p class="list-note" id="criticalNote"></p>
         </div>
         <aside class="detail-panel" id="criticalDetail" aria-label="Item details" hidden></aside>
@@ -426,13 +556,13 @@
       <div class="an-grid">
         <section class="card an-wide" aria-labelledby="anVolumeTitle">
           <div class="card-head">
-            <div><h3 id="anVolumeTitle">Published per day</h3><div class="card-sub">Stacked by severity</div></div>
-            <div class="legend" aria-hidden="true"><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
+            <div><h3 id="anVolumeTitle">Published per day</h3><div class="card-sub">Stacked by priority</div></div>
+            <div class="legend" aria-hidden="true"><span><i class="bar-critical"></i>Critical</span><span><i class="bar-high"></i>High</span><span><i class="bar-medium"></i>Medium</span><span><i class="bar-low"></i>Low</span></div>
           </div>
           <div class="an-body an-volume" id="anVolume"></div>
         </section>
         <section class="card" aria-labelledby="anMixTitle">
-          <div class="card-head"><div><h3 id="anMixTitle">Severity mix</h3><div class="card-sub" id="anMixSub">Compared with the previous period</div></div></div>
+          <div class="card-head"><div><h3 id="anMixTitle">Priority mix</h3><div class="card-sub" id="anMixSub">Compared with the previous period</div></div></div>
           <div class="an-body" id="anSeverity"></div>
         </section>
         <section class="card" aria-labelledby="anSourcesTitle">
@@ -471,6 +601,8 @@
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="Settings sections">
           <button type="button" data-target="set-collection" class="active">Collection</button>
+          <button type="button" data-target="set-stack">Our stack</button>
+          <button type="button" data-target="set-kev">Exploited vulnerabilities</button>
           <button type="button" data-target="set-alerts">Alerts</button>
           <button type="button" data-target="set-storage">Storage</button>
           <button type="button" data-target="set-backup">Backup and restore</button>
@@ -478,7 +610,7 @@
           <button type="button" data-target="set-security">Security</button>
         </nav>
         <div class="settings-main">
-          <div class="settings-card" id="set-collection">
+          <div class="settings-card active" id="set-collection">
             <div class="settings-card-head"><h3>Collection</h3><p>How Pantomath fetches and reads your feeds.</p></div>
             <div class="set-row">
               <div class="set-text">
@@ -496,6 +628,56 @@
             </div>
           </div>
 
+          <div class="settings-card" id="set-stack">
+            <div class="settings-card-head"><h3>Our stack</h3><p>The vendors, products and systems you run. Items that mention one are marked <strong>Affects us</strong>.</p></div>
+            <div class="set-block">
+              <div class="stack-form">
+                <div class="stack-field">
+                  <label for="stackName">Name</label>
+                  <input type="text" class="text-input" id="stackName" maxlength="60" placeholder="e.g. FortiGate">
+                </div>
+                <div class="stack-field grow">
+                  <label for="stackAliases">Also match <span class="muted">(optional, separate with commas)</span></label>
+                  <input type="text" class="text-input" id="stackAliases" placeholder="e.g. FortiOS, Fortinet firewall">
+                </div>
+                <button type="button" class="btn btn-primary" id="stackSaveBtn">Add</button>
+                <button type="button" class="btn" id="stackCancelBtn" hidden>Cancel</button>
+              </div>
+              <p class="set-hint">Matched as whole words in each item's title and summary, ignoring upper and lower case. Short all-capital names such as APC must match exactly. Every stored item is checked again when the list changes.</p>
+              <p class="set-result" id="stackResult" role="status"></p>
+              <div class="stack-suggest" id="stackSuggest"></div>
+            </div>
+            <div class="stack-list" id="stackList"></div>
+            <p class="set-hint stack-privacy">The list itself stays in Settings, but anyone who can open the dashboard sees which items are marked and why. Keep Pantomath on a network only your team can reach.</p>
+          </div>
+
+          <div class="settings-card" id="set-kev">
+            <div class="settings-card-head"><h3>Exploited vulnerabilities</h3><p>CISA's Known Exploited Vulnerabilities (KEV) catalog: CVEs confirmed to be used in real attacks.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="kevLabel">Use the KEV catalog</span>
+                <p class="set-hint">Items that mention a CVE on the list are marked <strong>Exploited</strong>, with the date CISA added it and CISA's deadline for fixing it. The catalog is downloaded once a day.</p>
+              </div>
+              <div class="set-control"><button type="button" class="toggle-switch on" id="kevToggle" role="switch" aria-checked="true" aria-labelledby="kevLabel"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label" id="kevStatusLabel">Checking…</span>
+                <p class="set-hint" id="kevStatusHint"></p>
+              </div>
+              <div class="set-control"><button type="button" class="btn" id="kevRefreshBtn">Update now</button></div>
+            </div>
+            <div class="set-block">
+              <label class="set-label" for="kevUrl">Catalog address</label>
+              <p class="set-hint">Leave empty to use CISA's official feed. On a server without internet access, point this at an internal copy of the same JSON file.</p>
+              <div class="kev-url">
+                <input type="url" class="text-input" id="kevUrl" placeholder="https://www.cisa.gov/…/known_exploited_vulnerabilities.json">
+                <button type="button" class="btn" id="kevUrlSaveBtn">Save</button>
+              </div>
+              <p class="set-result" id="kevUrlResult" role="status"></p>
+            </div>
+          </div>
+
           <div class="settings-card" id="set-alerts">
             <div class="settings-card-head"><h3>Alerts</h3><p>Hear about new items without watching the dashboard.</p></div>
             <div class="set-row">
@@ -509,12 +691,13 @@
             <div class="set-row">
               <div class="set-text">
                 <label class="set-label" for="notifThreshold">Notify me for</label>
-                <p class="set-hint">The lowest severity that triggers a notification.</p>
+                <p class="set-hint">The lowest priority that triggers a notification.</p>
               </div>
               <div class="set-control">
                 <select id="notifThreshold" class="control-select">
-                  <option value="high">High severity only</option>
-                  <option value="medium">High and medium</option>
+                  <option value="critical">Critical only</option>
+                  <option value="high">Critical and high</option>
+                  <option value="medium">Critical, high and medium</option>
                   <option value="low">Everything</option>
                 </select>
               </div>
@@ -609,18 +792,54 @@
           </div>
 
           <div class="settings-card" id="set-security">
-            <div class="settings-card-head"><h3>Security</h3><p>Who can change what.</p></div>
+            <div class="settings-card-head"><h3>Security</h3><p>Who can see Pantomath, and who can change it.</p></div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Team password</span>
+                <p class="set-hint" id="teamPwHint">Lets people sign in to view Pantomath. It can't change settings.</p>
+              </div>
+              <div class="set-control">
+                <button type="button" class="btn" id="teamPwRemove" hidden>Remove</button>
+                <button type="button" class="btn btn-primary" id="teamPwBtn">Set team password</button>
+              </div>
+            </div>
+            <div class="set-block" id="teamPwForm" hidden>
+              <div class="stack-form">
+                <div class="stack-field"><label for="teamPw1">New team password</label><input type="password" class="text-input" id="teamPw1" autocomplete="new-password"></div>
+                <div class="stack-field"><label for="teamPw2">Type it again</label><input type="password" class="text-input" id="teamPw2" autocomplete="new-password"></div>
+                <button type="button" class="btn btn-primary" id="teamPwSave">Save</button>
+                <button type="button" class="btn" id="teamPwCancel">Cancel</button>
+              </div>
+              <p class="set-hint">At least 8 characters, and different from the Settings password. Changing it signs out everyone who signed in with the old one, including wall screens.</p>
+              <p class="set-result" id="teamPwResult" role="status"></p>
+            </div>
+            <div class="set-block">
+              <div class="set-block-head">
+                <div><span class="set-label">Signed-in devices</span><p class="set-hint">Browsers that are signed in now. Sign out any you don't recognise.</p></div>
+                <button type="button" class="btn btn-sm" id="signOutOthersBtn">Sign out all other devices</button>
+              </div>
+              <div class="device-list" id="deviceList"></div>
+            </div>
+            <div class="set-block">
+              <span class="set-label">API keys</span>
+              <p class="set-hint">For scripts and other dashboards. Send the key as <code>Authorization: Bearer …</code>. A key can read everything but change nothing, and it's shown only once.</p>
+              <div class="kev-url">
+                <input type="text" class="text-input" id="apiKeyLabel" maxlength="60" placeholder="What will use it, e.g. SIEM export">
+                <button type="button" class="btn" id="apiKeyCreateBtn">Create key</button>
+              </div>
+              <div class="api-key-new" id="apiKeyNew" hidden></div>
+              <div class="device-list" id="apiKeyList"></div>
+            </div>
             <div class="set-row">
               <div class="set-text">
                 <span class="set-label">Settings password</span>
-                <p class="set-hint">Needed for Settings, Sources and anything that makes the server fetch a URL. The dashboard, feeds, indicators and analytics stay readable without it, so they work on a shared screen.</p>
-                <p class="set-hint">Forgot it? On the server, run <code>sudo pantomath-admin reset-settings-password</code>.</p>
+                <p class="set-hint">Changes settings and sources, and also signs people in. Forgot it? On the server, run <code>sudo pantomath-admin reset-settings-password</code>; the next person to open Pantomath then sets a new one.</p>
               </div>
             </div>
             <div class="set-row">
               <div class="set-text">
                 <span class="set-label">HTTPS</span>
-                <p class="set-hint">Pantomath listens on port 7373 on every network interface. To put it behind nginx with HTTPS, run <code>sudo pantomath-admin setup-https</code> on the server.</p>
+                <p class="set-hint">Pantomath listens on port 7373 on every network interface. Passwords are sent in plain text over plain HTTP, so on anything but a trusted network run <code>sudo pantomath-admin setup-https</code> on the server to put nginx with HTTPS in front of it.</p>
               </div>
             </div>
           </div>
@@ -741,12 +960,18 @@
       </select>
     </div>
     <div class="field">
-      <label>Minimum severity</label>
+      <label>Minimum priority</label>
       <select id="whMinSeverity">
-        <option value="">Any severity</option>
+        <option value="">Any priority</option>
         <option value="medium">Medium and above</option>
-        <option value="high">High only</option>
+        <option value="high">High and critical</option>
+        <option value="critical">Critical only</option>
       </select>
+    </div>
+    <div class="field">
+      <label class="check-label"><input type="checkbox" id="whOnlyOurs"> Only items that affect our stack</label>
+      <label class="check-label"><input type="checkbox" id="whOnlyExploited"> Only exploited vulnerabilities (CISA KEV)</label>
+      <div class="hint">Optional. The keyword, source and severity filters above still apply too.</div>
     </div>
     <div class="field">
       <label style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:normal; font-size:12.5px; cursor:pointer;">

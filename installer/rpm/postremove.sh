@@ -6,3 +6,6 @@ if [ "$1" = "purge" ]; then
     rm -rf /opt/pantomath/venv
     userdel pantomath 2>/dev/null || true
 fi
+
+# Remove the admin command shortcut created by postinstall.sh
+rm -f /usr/local/bin/pantomath-admin

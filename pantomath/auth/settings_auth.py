@@ -1,36 +1,13 @@
 """
-Password protection for the Settings and Sources pages — NOT the rest of
-the app. Pantomath is designed as an always-open, always-visible
-dashboard (a SOC/NOC "notification board"), so viewing items, IOCs,
-analytics, etc. stays completely unauthenticated by design; only the two
-configuration surfaces need a gate:
-  - Settings: retention policy, deep extraction toggle, notification
-    threshold, webhook management, database backup/restore, reprocessing.
-  - Sources: add/remove/pause/edit/import feed sources.
-
-Reuses the exact hashing scheme already established in
-pantomath/alerts/webhook_keys.py (PBKDF2-HMAC-SHA256, 200k iterations,
-16-byte random salt, constant-time comparison via hmac.compare_digest)
-rather than introducing a second crypto convention for the same job.
-
-Recovery model: a one-time recovery code is generated and shown exactly
-once, at setup and again after every successful recovery. Only its hash
-is ever stored — if it's lost, it's genuinely gone, the same "no silent
-recovery" philosophy webhook_keys.py already documents for webhook keys,
-except here there IS a path back in (the code itself) rather than none
-at all. If BOTH the password and the recovery code are lost, the
-documented fallback is `pantomath.cli reset-settings-password` (see
-pantomath/cli.py) — run locally on the server. This isn't a new
-capability: whoever has shell access to the box can already read/edit
-the SQLite file directly regardless of what this module does, so the CLI
-command is just an official, safe version of something already possible.
-
-Session tokens are intentionally in-memory only (a plain module-level
-dict), never persisted to disk. A server restart requiring everyone to
-log back in is a reasonable, safe default — and this app runs as a
-single uvicorn worker (see pantomath.service — no --workers flag), so
-there's no multi-process state-sharing problem an in-memory dict would
-create.
+The Settings password: it unlocks Settings and Sources (a short-lived,
+in-memory Settings token, sent as X-Settings-Token), and since 0.8.0 it
+also signs people in to the dashboard (see sign_in.py, which checks it
+through password_matches() so sign-in guesses don't trip this module's own
+lockout). Stored as a salted PBKDF2 hash, with a one-time recovery code
+(also hashed) that can reset it from the sign-in page or the Settings
+unlock prompt. First-run creation is protected by the setup code
+(setup_code.py); `pantomath-admin reset-settings-password` resets it on the
+server.
 """
 import hashlib
 import hmac
@@ -159,6 +136,20 @@ async def verify_password(db, password: str) -> tuple[bool, str]:
     match = hmac.compare_digest(pw_hash, hash_key(password or "", salt))
     await _record_attempt(db, match)
     return (True, "") if match else (False, "Incorrect password")
+
+
+async def password_matches(db, password: str) -> bool:
+    """
+    True if `password` is the Settings password, WITHOUT recording an
+    attempt: the dashboard sign-in (sign_in.py) checks it as a fallback and
+    has its own per-address attempt limit, so wrong guesses there can't lock
+    the admin out of Settings.
+    """
+    pw_hash = await _get(db, _KEYS["password_hash"])
+    pw_salt_hex = await _get(db, _KEYS["password_salt"])
+    if not pw_hash or not pw_salt_hex:
+        return False
+    return hmac.compare_digest(pw_hash, hash_key(password or "", bytes.fromhex(pw_salt_hex)))
 
 
 async def reset_via_recovery_code(db, code: str, new_password: str) -> tuple[bool, str, str | None]:

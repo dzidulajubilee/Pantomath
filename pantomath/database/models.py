@@ -64,6 +64,37 @@ CREATE TABLE IF NOT EXISTS webhooks (
     key_locked_until REAL DEFAULT 0, -- unix timestamp; failed-attempt lockout for the key, see pantomath/alerts/webhook_keys.py
     allow_insecure_tls INTEGER DEFAULT 0  -- opt-in per-webhook: 1 skips TLS certificate verification (self-signed certs, internal CAs)
 );
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,           -- shown on items as the reason they "affect us"
+    aliases TEXT DEFAULT '',      -- comma-separated extra terms, matched like the name
+    created_at REAL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS kev (
+    cve TEXT PRIMARY KEY,         -- CISA Known Exploited Vulnerabilities catalog, see intelligence/kev.py
+    vendor TEXT DEFAULT '',
+    product TEXT DEFAULT '',
+    name TEXT DEFAULT '',
+    date_added TEXT DEFAULT '',   -- YYYY-MM-DD
+    due_date TEXT DEFAULT '',     -- CISA's remediation deadline (binding on US federal agencies)
+    ransomware TEXT DEFAULT '',   -- 'Known' / 'Unknown'
+    description TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,              -- shown in Settings; not the secret
+    token_hash TEXT NOT NULL UNIQUE,  -- SHA-256 of the cookie / API key; the token itself is never stored
+    kind TEXT DEFAULT 'browser',      -- 'browser' or 'api'
+    role TEXT DEFAULT 'team',         -- 'team' (team password), 'admin' (Settings password), 'api'
+    label TEXT DEFAULT '',            -- "Chrome on Windows", or the API key's name
+    remember INTEGER DEFAULT 0,       -- 1 = 90 days since last use; 0 = 12 idle hours
+    created_at REAL DEFAULT 0,
+    last_seen REAL DEFAULT 0,
+    expires_at REAL DEFAULT 0,        -- 0 = never (API keys, until revoked)
+    ip TEXT DEFAULT ''
+);
 """
 
 # Kept separate from TABLE_SCHEMA above and applied AFTER _run_migrations()
@@ -116,4 +147,13 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("sources", "last_success", "REAL DEFAULT 0"),
     ("sources", "failing_since", "REAL DEFAULT 0"),
     ("sources", "last_duration_ms", "INTEGER DEFAULT 0"),
+    # 0.7.0 — "Our stack" and CISA KEV marks on items, and webhook filters for them
+    ("items", "watch_hits", "TEXT DEFAULT ''"),
+    ("items", "kev_cves", "TEXT DEFAULT ''"),
+    ("webhooks", "only_affects_us", "INTEGER DEFAULT 0"),
+    ("webhooks", "only_exploited", "INTEGER DEFAULT 0"),
+    # 0.8.0 — items.severity now holds the priority; the keyword rating
+    # and the phrase that decided it are kept here (see intelligence/priority.py)
+    ("items", "content_severity", "TEXT DEFAULT ''"),
+    ("items", "content_keyword", "TEXT DEFAULT ''"),
 ]

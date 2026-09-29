@@ -142,7 +142,7 @@ async def test_scheduler_records_health_history(feed_server):
 
 def test_analytics_counts_by_published_date_and_compares_periods():
     a = client.get("/api/analytics?days=30").json()
-    assert a["totals"] == {"high": 1, "medium": 1, "low": 0, "items": 2}  # the 40-day-old backlog item is excluded
+    assert a["totals"] == {"critical": 0, "high": 1, "medium": 1, "low": 0, "items": 2}  # the 40-day-old backlog item is excluded
     assert a["previous"]["items"] == 1                                    # ...and lands in the previous 30 days
     assert len(a["by_day"]) == 30 and a["by_day"][-1]["date"] == time.strftime("%Y-%m-%d")
     assert a["active_sources"] == 2

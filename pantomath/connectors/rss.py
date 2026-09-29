@@ -16,8 +16,11 @@ from pantomath.feeds.article_fetcher import fetch_article_text_sync
 from pantomath.feeds.parser import normalize_entry
 from pantomath.feeds.rss import FETCH_HARD_LIMIT, FeedFetchError, fetch_raw
 from pantomath.intelligence.ioc_extraction import extract_iocs
-from pantomath.intelligence.scoring import score_severity
+from pantomath.intelligence.kev import kev_hits, load_kev_set
+from pantomath.intelligence.priority import compute_priority
+from pantomath.intelligence.scoring import score_severity_detail
 from pantomath.intelligence.tagging import extract_tags
+from pantomath.intelligence.watchlist import load_watchlist, match_watchlist
 
 MAX_CONCURRENT_ARTICLE_FETCHES = 5
 
@@ -88,6 +91,9 @@ class RSSConnector(BaseConnector):
         deep_extraction = await self._deep_extraction_enabled(db)
         article_texts = await self._fetch_article_texts(new_items) if deep_extraction else {}
 
+        watchlist = await load_watchlist(db)
+        kev_set = await load_kev_set(db)
+
         inserted = []
         for item in new_items:
             item_id = str(uuid.uuid4())
@@ -96,9 +102,12 @@ class RSSConnector(BaseConnector):
             # and displayed summary stays the original RSS teaser.
             extraction_text = " ".join(filter(None, [item["summary"], article_texts.get(item["guid"], "")]))
 
-            severity = score_severity(item["title"], extraction_text)
+            content_severity, content_keyword = score_severity_detail(item["title"], extraction_text)
             vendors, actors = extract_tags(item["title"], extraction_text)
             iocs = extract_iocs(item["title"], extraction_text)
+            watch_hits = match_watchlist(watchlist, item["title"], item["summary"])
+            kev_cves = kev_hits(iocs["cve"], kev_set)
+            severity = compute_priority(content_severity, bool(watch_hits), bool(kev_cves))
 
             # INSERT OR IGNORE + rowcount is still the final "only new
             # items stored" safety net (e.g. a concurrent poll), even
@@ -106,14 +115,17 @@ class RSSConnector(BaseConnector):
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO items
                    (id, source_id, title, link, summary, published, fetched_at, guid,
-                    severity, vendors, actors, cves, ips, hashes, emails)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    severity, vendors, actors, cves, ips, hashes, emails, watch_hits, kev_cves,
+                    content_severity, content_keyword)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     item_id, self.source["id"], item["title"], item["link"],
                     item["summary"], item["published"], time.time(),
                     item["guid"], severity, ",".join(vendors), ",".join(actors),
                     ",".join(iocs["cve"]), ",".join(iocs["ip"]),
                     ",".join(iocs["hash"]), ",".join(iocs["email"]),
+                    ",".join(watch_hits), ",".join(kev_cves),
+                    content_severity, content_keyword,
                 ),
             )
             if cursor.rowcount == 0:
@@ -131,12 +143,16 @@ class RSSConnector(BaseConnector):
                 "summary": item["summary"][:400],
                 "published": item["published"],
                 "severity": severity,
+                "content_severity": content_severity,
+                "content_keyword": content_keyword,
                 "vendors": vendors,
                 "actors": actors,
                 "cves": iocs["cve"],
                 "ips": iocs["ip"],
                 "hashes": iocs["hash"],
                 "emails": iocs["email"],
+                "watch_hits": watch_hits,
+                "kev_cves": kev_cves,
                 "bookmarked": False,
             })
 

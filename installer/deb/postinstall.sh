@@ -38,13 +38,35 @@ ln -sf /opt/pantomath/venv/bin/pantomath-admin /usr/local/bin/pantomath-admin
 
 systemctl daemon-reload
 systemctl enable pantomath.service
-systemctl restart pantomath.service || systemctl start pantomath.service
+systemctl stop pantomath.service 2>/dev/null || true
+# First run (0.8.1): create the one-time setup code before the service
+# starts, so it can be shown below. Prints nothing on an install that
+# already has a Settings password. Run as the service user so the database
+# files stay owned by it.
+SETUP_CODE=$(runuser -u pantomath -- env PANTOMATH_DB=/var/lib/pantomath/pantomath.db \
+    /opt/pantomath/venv/bin/pantomath-admin setup-code --bare 2>/dev/null || true)
+systemctl start pantomath.service
 
 echo ""
 echo "Pantomath installed."
-echo "Dashboard: http://localhost:7373"
+echo "Dashboard: http://$(hostname -f 2>/dev/null || hostname):7373"
 echo "No sources are pre-loaded — add your feeds from the UI."
 echo "Data: /var/lib/pantomath/pantomath.db"
 echo "Logs: journalctl -u pantomath -f"
 echo "Admin commands: pantomath-admin --help (e.g. 'pantomath-admin setup-https' for HTTPS via nginx)"
 echo ""
+if [ -n "$SETUP_CODE" ]; then
+    HOST=$(hostname -f 2>/dev/null || hostname)
+    echo "==================== First-time setup ===================="
+    echo "  Open http://$HOST:7373 and enter this setup code on the"
+    echo "  Welcome screen to create the Settings password:"
+    echo ""
+    echo "      $SETUP_CODE"
+    echo ""
+    echo "  Nobody can set Pantomath up without it. Show it again with:"
+    echo "      sudo pantomath-admin setup-code"
+    echo "  Tip: run 'sudo pantomath-admin setup-https' first, so the"
+    echo "  password is never sent over plain HTTP."
+    echo "=========================================================="
+    echo ""
+fi

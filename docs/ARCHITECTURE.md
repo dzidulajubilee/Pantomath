@@ -1,3 +1,9 @@
+> **This is the design log.** It records why things are the way they are,
+> release by release, including bugs that shaped the design, and some early
+> sections describe the code as it was then. For the current overview start
+> with [how-it-works.md](how-it-works.md); the full documentation index is
+> [docs/README.md](README.md).
+
 # Architecture
 
 ## Layout
@@ -174,6 +180,79 @@ shape (triangle high, diamond medium, ring low), never colour alone.
 - **First/last seen.** In `/api/iocs?detail=1`, mentions, sources and
   severity follow the selected day, but first and last seen are computed
   over all items, so "first seen" really is the first time.
+
+## Our stack and CISA KEV (0.7.0)
+
+- **Stored per item.** `items.watch_hits` (names of Our stack entries the
+  item mentions) and `items.kev_cves` (its CVEs that are on the KEV
+  catalog), both comma-separated like the other tag columns, so pages,
+  counts and webhooks filter with plain SQL (`affects_us=1`, `exploited=1`).
+- **When they change.** New items are marked at ingest
+  (`connectors/rss.py`), and Reprocess all recomputes both. Adding, editing
+  or removing an Our stack entry re-matches every stored item
+  (`watchlist.rematch_all`, rowid batches); a catalog download re-marks every
+  item with a CVE (`kev.recompute_item_kev`).
+- **Matching** (`intelligence/watchlist.py`) uses the title and RSS summary
+  only, never the deep-extraction page: that page isn't stored, so stored
+  items couldn't be re-matched the same way, and sidebars would cause false
+  matches. Whole words; short all-capital terms are case-sensitive.
+- **KEV download** (`intelligence/kev.py`) runs as a background task from the
+  scheduler: daily after a success, hourly after a failure, never when
+  disabled. A failed download keeps the previous copy and records the reason
+  for Settings. `kev_url` can point at an internal copy for offline servers.
+- **Exposure.** `/api/watchlist` and the KEV settings are protected. Public
+  endpoints return counts (`/api/overview`) and each item's own matches, never
+  the list itself; `/api/kev?cves=` is public because CISA's data is.
+
+## Sign-in, priority and read state (0.8.0)
+
+- **Sign-in** (`auth/sign_in.py`). `router` carries a `require_viewer`
+  dependency, so every data route needs a session by construction; only
+  `auth_router` (sign-in endpoints and the WebSocket, which checks the
+  cookie itself and closes with 4401) is reachable without one. Sessions
+  live in the `sessions` table as SHA-256 hashes of 256-bit tokens, cached
+  for 30 s per token, touched at most every 5 minutes. Roles: `team`,
+  `admin` (signed in with the Settings password, which also returns a
+  Settings token), `api` (keys). The Settings password check used here
+  doesn't count toward the Settings lockout; sign-in has its own per-address
+  limit. `PANTOMATH_OPEN_DASHBOARD=1` disables sign-in (reverse-proxy SSO,
+  and the test suite, where `tests/test_sign_in.py` turns it back on).
+- **Priority** (`intelligence/priority.py`). `items.severity` now holds the
+  priority (critical/high/medium/low) so every existing filter, count,
+  webhook and notification threshold uses it; the keyword rating and the
+  phrase that decided it are in `content_severity` / `content_keyword`.
+  Ingest, Reprocess, Our stack re-matching and KEV re-marking all recompute
+  it; `init_db` backfills items stored before 0.8.0 once. Reasons are
+  derived per request in `_row_to_item`.
+- **Read state** stays in the browser: a time mark ("since you last left",
+  or Mark all as read) plus small maps of items opened after it and items
+  marked unread from before it. The server's `new_since` count is adjusted
+  with them, so counts drop the moment an item is opened; `storage` events
+  keep other tabs in step. The sign-in page never records a visit.
+
+## First run and recovery (0.8.1)
+
+- **Setup code.** Before 0.8.1 the first person to reach a fresh install
+  created the Settings password ("trust on first use"). Now
+  `auth/setup_code.py` creates a one-time 12-character code (about 59 bits)
+  when the install has no Settings password: at install time
+  (`postinstall.sh` runs `pantomath-admin setup-code --bare` as the service
+  user before starting the service, and prints it) or on startup. Only its
+  PBKDF2 hash is in the database; the plain code is in `setup-code` next to
+  the database (mode 0600), never in the logs. `/api/auth/setup` and the
+  in-app `/api/settings/auth/setup` both require it (the latter only with
+  sign-in on); it's deleted once used.
+- **Recovery on the sign-in page.** In 0.8.0 the recovery-code form only
+  existed inside the Settings unlock prompt, behind sign-in, so a lost
+  Settings password without a team password could only be fixed on the
+  server. `/api/auth/recover` (no sign-in needed, attempt-limited) resets it
+  and signs out other Settings-password sessions.
+- **The CLI never reopens first-run setup by accident.**
+  `reset-settings-password` sets the new password directly; `--clear`
+  returns to first-run setup but signs every browser out, so the only way
+  back in is the setup code. Commands that touch the database continue as the
+  owner of the database folder when run as root: the database is in WAL
+  mode, and a root-owned `-wal`/`-shm` file would stop the service writing.
 
 ## Extensibility: the connector contract
 

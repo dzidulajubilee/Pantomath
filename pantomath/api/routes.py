@@ -3,13 +3,14 @@ import calendar
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from pantomath.alerts.dispatcher import build_payload, send_webhook_sync
 from pantomath.alerts.webhook_keys import check_and_consume_attempt, hash_key, mask_url, new_salt
-from pantomath.auth import settings_auth
+from pantomath import __version__
+from pantomath.auth import settings_auth, setup_code, sign_in
 from pantomath.connectors.registry import CONNECTOR_REGISTRY, available_connector_types
 from pantomath.database.restore import (
     RestoreValidationError,
@@ -25,9 +26,44 @@ from pantomath.intelligence.enrichment import (
     invalidate_icon_cache,
 )
 from pantomath.intelligence.ioc_extraction import CVE_PATTERN
+from pantomath.intelligence.kev import kev_status, refresh_kev
+from pantomath.intelligence.priority import explain_priority
 from pantomath.intelligence.reprocessor import reprocess_items
+from pantomath.intelligence.watchlist import entry_terms, rematch_all
 
-router = APIRouter()
+
+async def require_viewer(request: Request):
+    """
+    Dependency on every route of `router` (0.8.0): the dashboard's data is
+    only for signed-in people. Accepts the sign-in cookie, an API key
+    (`Authorization: Bearer ...`), or an unlocked Settings token. The
+    X-Pantomath-Sign-In header tells the frontend to show the sign-in page
+    rather than the Settings unlock prompt.
+    """
+    if sign_in.open_dashboard():
+        return
+    if settings_auth.validate_session(request.headers.get("x-settings-token")):
+        return
+    token = sign_in.token_from(request.cookies.get(sign_in.COOKIE_NAME), request.headers.get("authorization"))
+    if token:
+        db = await get_db()
+        try:
+            session = await sign_in.validate(db, token)
+        finally:
+            await db.close()
+        if session:
+            request.state.session = session
+            return
+    raise HTTPException(401, "Sign in to Pantomath to see this.", headers={"X-Pantomath-Sign-In": "required"})
+
+
+# Everything the dashboard shows. Sign-in is enforced by construction: a
+# route added here is protected without anyone having to remember it.
+router = APIRouter(dependencies=[Depends(require_viewer)])
+
+# The only routes reachable without signing in: sign-in itself and the
+# WebSocket (which checks the cookie on its own, see ws_endpoint).
+auth_router = APIRouter()
 
 
 async def require_settings_auth(x_settings_token: str | None = Header(None)):
@@ -54,6 +90,7 @@ protected_router = APIRouter(dependencies=[Depends(require_settings_auth)])
 
 class SettingsPasswordSetup(BaseModel):
     password: str
+    setup_code: str = ""
 
 
 class SettingsPasswordLogin(BaseModel):
@@ -85,11 +122,19 @@ async def settings_auth_setup(body: SettingsPasswordSetup):
     if await settings_auth.is_password_configured(db):
         await db.close()
         raise HTTPException(409, "A password is already configured for Settings/Sources.")
+    # 0.8.1: with sign-in on, being signed in (say, with the team password)
+    # must not be enough to claim the Settings password: the setup code from
+    # the server is required here too. With sign-in off (behind an
+    # authenticating proxy) the proxy is the gate, as before.
+    if not sign_in.open_dashboard() and not await setup_code.verify(db, body.setup_code):
+        await db.close()
+        raise HTTPException(401, "That setup code isn't right. Show it on the server with: sudo pantomath-admin setup-code")
     try:
         recovery_code = await settings_auth.setup_password(db, body.password)
     except ValueError as e:
         await db.close()
         raise HTTPException(400, str(e))
+    await setup_code.discard(db)
     await db.close()
     return {"token": settings_auth.create_session(), "recovery_code": recovery_code}
 
@@ -145,6 +190,11 @@ def _row_to_item(row: dict) -> dict:
     row["ips"] = [i for i in (row.get("ips") or "").split(",") if i]
     row["hashes"] = [h for h in (row.get("hashes") or "").split(",") if h]
     row["emails"] = [e for e in (row.get("emails") or "").split(",") if e]
+    row["watch_hits"] = [w for w in (row.get("watch_hits") or "").split(",") if w]
+    row["kev_cves"] = [k for k in (row.get("kev_cves") or "").split(",") if k]
+    row["priority_reasons"] = explain_priority(
+        row.get("content_severity") or "", row.get("content_keyword") or "", row["watch_hits"], row["kev_cves"]
+    )
     row["bookmarked"] = bool(row.get("bookmarked"))
     return row
 
@@ -418,7 +468,7 @@ async def import_sources(payload: dict):
 def _build_item_conditions(
     source_id=None, category=None, severity=None, keyword=None, vendor=None, actor=None,
     ioc_type=None, ioc_value=None, has_cve=False, has_actor=False, bookmarked_only=False,
-    date_from=None, date_to=None,
+    date_from=None, date_to=None, affects_us=False, exploited=False,
 ):
     """
     Shared WHERE-condition builder for GET /api/items and GET
@@ -471,6 +521,10 @@ def _build_item_conditions(
         conditions.append("items.actors != ''")
     if bookmarked_only:
         conditions.append("items.bookmarked = 1")
+    if affects_us:
+        conditions.append("items.watch_hits != ''")
+    if exploited:
+        conditions.append("items.kev_cves != ''")
     if date_from:
         conditions.append("items.fetched_at >= ?")
         params.append(_day_start_ts(date_from))
@@ -495,6 +549,8 @@ async def list_items(
     has_cve: bool = False,  # items with at least one extracted CVE, regardless of source category
     has_actor: bool = False,  # items with at least one detected threat actor (ransomware gang/APT group)
     bookmarked_only: bool = False,
+    affects_us: bool = False,  # items that mention something on Settings -> Our stack
+    exploited: bool = False,   # items that mention a CVE on CISA's KEV catalog
     date_from: str | None = None,  # 'YYYY-MM-DD', inclusive, matched against fetched_at
     date_to: str | None = None,    # 'YYYY-MM-DD', inclusive
 ):
@@ -505,6 +561,7 @@ async def list_items(
     conditions, params = _build_item_conditions(
         source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
         has_cve, has_actor, bookmarked_only, date_from, date_to,
+        affects_us=affects_us, exploited=exploited,
     )
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
@@ -532,6 +589,8 @@ async def count_items(
     has_cve: bool = False,
     has_actor: bool = False,
     bookmarked_only: bool = False,
+    affects_us: bool = False,  # items that mention something on Settings -> Our stack
+    exploited: bool = False,   # items that mention a CVE on CISA's KEV catalog
     date_from: str | None = None,
     date_to: str | None = None,
 ):
@@ -541,6 +600,7 @@ async def count_items(
     conditions, params = _build_item_conditions(
         source_id, category, severity, keyword, vendor, actor, ioc_type, ioc_value,
         has_cve, has_actor, bookmarked_only, date_from, date_to,
+        affects_us=affects_us, exploited=exploited,
     )
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
@@ -651,7 +711,7 @@ def _ioc_detail_query(column: str, extra_where: str = "", tag_filter: str = "") 
           ),
           ranged AS (
             SELECT tag AS name, COUNT(*) AS count, COUNT(DISTINCT source_id) AS sources,
-                   MAX(CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) AS severity_rank
+                   MAX(CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) AS severity_rank
             FROM split WHERE tag != ''{tag_filter} GROUP BY tag
           ),
           all_base AS (SELECT {column} || ',' AS rest, fetched_at FROM items WHERE {column} != ''),
@@ -728,7 +788,7 @@ async def list_iocs(
         tag_filter, q_params = " AND instr(lower(tag), lower(?)) > 0", (q.strip(),)
     query = _ioc_detail_query(col, extra_where=date_where, tag_filter=tag_filter) + " ORDER BY count DESC, name ASC LIMIT ? OFFSET ?"
     cur = await db.execute(query, (*date_params, *q_params, limit, offset))
-    ranks = {3: "high", 2: "medium", 1: "low"}
+    ranks = {4: "critical", 3: "high", 2: "medium", 1: "low"}
     rows = []
     for r in await cur.fetchall():
         row = dict(r)
@@ -939,12 +999,24 @@ async def get_overview(hours: int = 24, since: float | None = None):
             row = await cur.fetchone()
             return row[0] if row else 0
 
+        # "High" on the dashboard means high priority or above.
         high_in_window = await scalar(
-            f"SELECT COUNT(*) FROM items WHERE severity = 'high' AND {_EFFECTIVE_TS} > ?", (window_start,)
+            f"SELECT COUNT(*) FROM items WHERE severity IN ('critical', 'high') AND {_EFFECTIVE_TS} > ?", (window_start,)
+        )
+        critical_in_window = await scalar(
+            f"SELECT COUNT(*) FROM items WHERE severity = 'critical' AND {_EFFECTIVE_TS} > ?", (window_start,)
         )
         published_today = await scalar(f"SELECT COUNT(*) FROM items WHERE {_EFFECTIVE_TS} >= ?", (today_start,))
         published_week = await scalar(f"SELECT COUNT(*) FROM items WHERE {_EFFECTIVE_TS} >= ?", (week_start,))
         new_since = await scalar("SELECT COUNT(*) FROM items WHERE fetched_at > ?", (since,))
+        affects_us = await scalar(f"SELECT COUNT(*) FROM items WHERE watch_hits != '' AND {_EFFECTIVE_TS} > ?", (window_start,))
+        affects_us_exploited = await scalar(
+            f"SELECT COUNT(*) FROM items WHERE watch_hits != '' AND kev_cves != '' AND {_EFFECTIVE_TS} > ?", (window_start,)
+        )
+        exploited = await scalar(f"SELECT COUNT(*) FROM items WHERE kev_cves != '' AND {_EFFECTIVE_TS} > ?", (window_start,))
+        watchlist_size = await scalar("SELECT COUNT(*) FROM watchlist")
+        kev_size = await scalar("SELECT COUNT(*) FROM kev")
+        kev_off = await scalar("SELECT COUNT(*) FROM settings WHERE key = 'kev_enabled' AND value = '0'")
 
         indicators_week = {}
         for column, key in (("cves", "cve"), ("ips", "ip"), ("hashes", "hash"), ("emails", "email")):
@@ -955,8 +1027,8 @@ async def get_overview(hours: int = 24, since: float | None = None):
             f"""SELECT items.*, sources.name AS source_name, sources.color AS source_color,
                        sources.icon_url AS source_icon, sources.category AS category
                 FROM items JOIN sources ON items.source_id = sources.id
-                WHERE items.severity = 'high' AND {_EFFECTIVE_TS_ITEMS} > ?
-                ORDER BY {_EFFECTIVE_TS_ITEMS} DESC LIMIT 8""",
+                WHERE items.severity IN ('critical', 'high') AND {_EFFECTIVE_TS_ITEMS} > ?
+                ORDER BY items.severity = 'critical' DESC, {_EFFECTIVE_TS_ITEMS} DESC LIMIT 8""",
             (window_start,),
         )
         attention = [_row_to_item(dict(r)) for r in await cur.fetchall()]
@@ -990,7 +1062,11 @@ async def get_overview(hours: int = 24, since: float | None = None):
         "hours": hours,
         "since": since,
         "high_in_window": high_in_window,
+        "critical_in_window": critical_in_window,
         "new_since": new_since,
+        # Counts only: the watchlist itself is Settings-only.
+        "affects_us": {"items": affects_us, "exploited": affects_us_exploited, "watchlist": watchlist_size},
+        "exploited": {"items": exploited, "catalog": kev_size, "enabled": not kev_off},
         "published_today": published_today,
         "published_week": published_week,
         "indicators_week": indicators_week,
@@ -1025,7 +1101,7 @@ async def get_analytics(days: int = 30):
                 (lo, hi),
             )
             counts = {r["severity"]: r["c"] for r in await cur.fetchall()}
-            return {sev: counts.get(sev, 0) for sev in ("high", "medium", "low")}
+            return {sev: counts.get(sev, 0) for sev in ("critical", "high", "medium", "low")}
 
         current = await severity_counts(start, now + 86400)
         previous = await severity_counts(prev_start, start)
@@ -1042,7 +1118,7 @@ async def get_analytics(days: int = 30):
         for offset in range(days - 1, -1, -1):
             day = time.strftime("%Y-%m-%d", time.localtime(today_start - offset * 86400 + 43200))
             counts = buckets.get(day, {})
-            by_day.append({"date": day, **{sev: counts.get(sev, 0) for sev in ("high", "medium", "low")}})
+            by_day.append({"date": day, **{sev: counts.get(sev, 0) for sev in ("critical", "high", "medium", "low")}})
 
         cur = await db.execute(
             f"""SELECT sources.category AS name, COUNT(*) AS count FROM items JOIN sources ON items.source_id = sources.id
@@ -1053,7 +1129,7 @@ async def get_analytics(days: int = 30):
 
         cur = await db.execute(
             f"""SELECT sources.name AS name, COUNT(*) AS count,
-                       SUM(CASE WHEN items.severity = 'high' THEN 1 ELSE 0 END) AS high
+                       SUM(CASE WHEN items.severity IN ('critical', 'high') THEN 1 ELSE 0 END) AS high
                 FROM items JOIN sources ON items.source_id = sources.id
                 WHERE {_EFFECTIVE_TS_ITEMS} >= ? GROUP BY sources.id ORDER BY count DESC, name ASC LIMIT 8""",
             (start,),
@@ -1104,6 +1180,423 @@ async def get_analytics(days: int = 30):
         "top_actors": top_actors,
         "heatmap": heatmap,
     }
+
+
+# ---------------------------------------------------------------- our stack
+
+class WatchIn(BaseModel):
+    name: str
+    aliases: str = ""
+
+
+class WatchEditIn(BaseModel):
+    name: str | None = None
+    aliases: str | None = None
+
+
+def _clean_watch_entry(name: str, aliases: str) -> tuple[str, str]:
+    name = " ".join((name or "").split())
+    if not name:
+        raise HTTPException(400, "Give the entry a name")
+    if "," in name:
+        raise HTTPException(400, "A name can't contain a comma. Put other spellings under 'Also match'.")
+    terms = entry_terms(name, aliases)
+    for term in terms:
+        if len(term) < 2:
+            raise HTTPException(400, f"'{term}' is too short: terms need at least 2 characters")
+        if len(term) > 60:
+            raise HTTPException(400, f"'{term[:30]}…' is too long: terms can have up to 60 characters")
+    if len(terms) > 21:
+        raise HTTPException(400, "Up to 20 extra terms per entry")
+    return name, ",".join(terms[1:])
+
+
+async def _watch_name_taken(db, name: str, except_id: str | None = None) -> bool:
+    cur = await db.execute(
+        "SELECT 1 FROM watchlist WHERE lower(name) = lower(?) AND id != ?", (name, except_id or "")
+    )
+    return await cur.fetchone() is not None
+
+
+@protected_router.get("/api/watchlist")
+async def list_watchlist():
+    """
+    Our stack, with how many stored items each entry marks. Settings-only
+    (it is an inventory of what the organisation runs); the dashboard only
+    ever gets counts.
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT id, name, aliases, created_at FROM watchlist ORDER BY name COLLATE NOCASE")
+        rows = [dict(r) for r in await cur.fetchall()]
+        for row in rows:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM items WHERE instr(',' || watch_hits || ',', ',' || ? || ',') > 0", (row["name"],)
+            )
+            row["items"] = (await cur.fetchone())[0]
+    finally:
+        await db.close()
+    return rows
+
+
+@protected_router.post("/api/watchlist")
+async def add_watch_entry(entry: WatchIn):
+    """Adds an entry and re-checks every stored item, so it applies to history too."""
+    name, aliases = _clean_watch_entry(entry.name, entry.aliases)
+    db = await get_db()
+    try:
+        if await _watch_name_taken(db, name):
+            raise HTTPException(409, f"'{name}' is already on the list")
+        wid = str(uuid.uuid4())
+        await db.execute("INSERT INTO watchlist (id, name, aliases) VALUES (?,?,?)", (wid, name, aliases))
+        await db.commit()
+        marked = await rematch_all(db)
+    finally:
+        await db.close()
+    return {"id": wid, "items_marked": marked}
+
+
+@protected_router.patch("/api/watchlist/{entry_id}")
+async def edit_watch_entry(entry_id: str, payload: WatchEditIn):
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT name, aliases FROM watchlist WHERE id = ?", (entry_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "No such entry")
+        name, aliases = _clean_watch_entry(
+            payload.name if payload.name is not None else row["name"],
+            payload.aliases if payload.aliases is not None else row["aliases"],
+        )
+        if await _watch_name_taken(db, name, except_id=entry_id):
+            raise HTTPException(409, f"'{name}' is already on the list")
+        await db.execute("UPDATE watchlist SET name = ?, aliases = ? WHERE id = ?", (name, aliases, entry_id))
+        await db.commit()
+        marked = await rematch_all(db)
+    finally:
+        await db.close()
+    return {"id": entry_id, "items_marked": marked}
+
+
+@protected_router.delete("/api/watchlist/{entry_id}")
+async def delete_watch_entry(entry_id: str):
+    db = await get_db()
+    try:
+        cur = await db.execute("DELETE FROM watchlist WHERE id = ?", (entry_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "No such entry")
+        await db.commit()
+        marked = await rematch_all(db)
+    finally:
+        await db.close()
+    return {"ok": True, "items_marked": marked}
+
+
+# ------------------------------------------------------ exploited (CISA KEV)
+
+class KevSettingsIn(BaseModel):
+    enabled: bool | None = None
+    url: str | None = None   # empty string = CISA's official feed
+
+
+@protected_router.get("/api/kev/status")
+async def get_kev_status():
+    db = await get_db()
+    try:
+        return await kev_status(db)
+    finally:
+        await db.close()
+
+
+@protected_router.patch("/api/kev/settings")
+async def update_kev_settings(payload: KevSettingsIn):
+    db = await get_db()
+    try:
+        if payload.url is not None:
+            url = payload.url.strip()
+            if url and not url.lower().startswith(("http://", "https://")):
+                raise HTTPException(400, "The catalog URL must start with http:// or https://")
+            await db.execute(
+                "INSERT INTO settings (key, value) VALUES ('kev_url', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (url,),
+            )
+        if payload.enabled is not None:
+            await db.execute(
+                "INSERT INTO settings (key, value) VALUES ('kev_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("1" if payload.enabled else "0",),
+            )
+        await db.commit()
+        return await kev_status(db)
+    finally:
+        await db.close()
+
+
+@protected_router.post("/api/kev/refresh")
+async def refresh_kev_now():
+    """Downloads the catalog now (Settings -> Update now). Protected: it makes the server fetch a URL."""
+    db = await get_db()
+    try:
+        return await refresh_kev(db)
+    finally:
+        await db.close()
+
+
+@router.get("/api/kev")
+async def lookup_kev(cves: str = ""):
+    """Catalog entries for up to 50 comma-separated CVE IDs (the item detail panel). Needs sign-in, like all data."""
+    ids = list(dict.fromkeys(c.strip().upper() for c in cves.split(",") if c.strip()))[:50]
+    if not ids:
+        return []
+    db = await get_db()
+    try:
+        cur = await db.execute(f"SELECT * FROM kev WHERE cve IN ({','.join('?' * len(ids))})", ids)
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+# ------------------------------------------------------------------ sign-in
+
+class SignInBody(BaseModel):
+    password: str
+    remember: bool = False
+
+
+class SetupBody(BaseModel):
+    password: str
+    setup_code: str = ""
+    remember: bool = True
+
+
+class RecoverBody(BaseModel):
+    recovery_code: str
+    new_password: str
+    remember: bool = False
+
+
+class TeamPasswordBody(BaseModel):
+    password: str
+
+
+class ApiKeyBody(BaseModel):
+    label: str
+
+
+def _client_ip(request: Request) -> str:
+    ip = request.client.host if request.client else ""
+    # Behind `pantomath-admin setup-https`, nginx on the same host forwards
+    # the real address; only trust the header when the request came from it.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if ip in ("127.0.0.1", "::1") and forwarded:
+        ip = forwarded.split(",")[0].strip()
+    return ip
+
+
+def _set_session_cookie(request: Request, response: Response, token: str, remember: bool) -> None:
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(
+        sign_in.COOKIE_NAME, token, max_age=sign_in.REMEMBER_SECONDS if remember else None,
+        httponly=True, samesite="strict", secure=https, path="/",
+    )
+
+
+@auth_router.get("/api/auth/status")
+async def auth_status(request: Request):
+    """What the sign-in page needs: set up yet? signed in? Nothing about the data."""
+    db = await get_db()
+    try:
+        configured = await settings_auth.is_password_configured(db)
+        if not configured:
+            await setup_code.ensure_setup_code(db)  # so there's always one to find on the server
+        team = await sign_in.team_password_set(db)
+        session = await sign_in.validate(db, request.cookies.get(sign_in.COOKIE_NAME))
+    finally:
+        await db.close()
+    open_ = sign_in.open_dashboard()
+    return {
+        "signed_in": open_ or bool(session),
+        "open": open_,
+        "setup_needed": not configured,
+        "team_password": team,
+        "role": session["role"] if session else None,
+        "remembered": bool(session and session["remember"]),
+        "version": __version__,
+    }
+
+
+@auth_router.post("/api/auth/login")
+async def auth_login(body: SignInBody, request: Request, response: Response):
+    ip = _client_ip(request)
+    allowed, wait = sign_in.check_rate(ip)
+    if not allowed:
+        raise HTTPException(429, f"Too many attempts. Try again in {wait} seconds.")
+    db = await get_db()
+    try:
+        if not await settings_auth.is_password_configured(db):
+            raise HTTPException(409, "Pantomath hasn't been set up yet.")
+        role = await sign_in.match_password(db, body.password)
+        if not role:
+            sign_in.record_failure(ip)
+            raise HTTPException(401, "That password isn't right.")
+        sign_in.record_success(ip)
+        token, _ = await sign_in.create_session(db, role, body.remember, ip, request.headers.get("user-agent", ""))
+    finally:
+        await db.close()
+    _set_session_cookie(request, response, token, body.remember)
+    result = {"ok": True, "role": role}
+    if role == "admin":
+        # Signing in with the Settings password also unlocks Settings.
+        result["settings_token"] = settings_auth.create_session()
+    return result
+
+
+@auth_router.post("/api/auth/setup")
+async def auth_setup(body: SetupBody, request: Request, response: Response):
+    """
+    First run only: creates the Settings password and signs this browser in.
+    Needs the one-time setup code from the server (setup_code.py), so the
+    first person to reach the page can't take the install over.
+    """
+    ip = _client_ip(request)
+    allowed, wait = sign_in.check_rate(ip)
+    if not allowed:
+        raise HTTPException(429, f"Too many attempts. Try again in {wait} seconds.")
+    db = await get_db()
+    try:
+        if await settings_auth.is_password_configured(db):
+            raise HTTPException(409, "Pantomath is already set up. Sign in instead.")
+        if not await setup_code.verify(db, body.setup_code):
+            sign_in.record_failure(ip)
+            raise HTTPException(401, "That setup code isn't right. Show it on the server with: sudo pantomath-admin setup-code")
+        sign_in.record_success(ip)
+        try:
+            recovery_code = await settings_auth.setup_password(db, body.password)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        await setup_code.discard(db)
+        token, _ = await sign_in.create_session(db, "admin", body.remember, ip, request.headers.get("user-agent", ""))
+    finally:
+        await db.close()
+    _set_session_cookie(request, response, token, body.remember)
+    return {"ok": True, "role": "admin", "recovery_code": recovery_code, "settings_token": settings_auth.create_session()}
+
+
+@auth_router.post("/api/auth/recover")
+async def auth_recover(body: RecoverBody, request: Request, response: Response):
+    """
+    "Forgot the Settings password?" on the sign-in page: the one-time
+    recovery code sets a new one and signs this browser in. The code is
+    replaced (it's single-use) and other devices signed in with the old
+    Settings password are signed out.
+    """
+    ip = _client_ip(request)
+    allowed, wait = sign_in.check_rate(ip)
+    if not allowed:
+        raise HTTPException(429, f"Too many attempts. Try again in {wait} seconds.")
+    db = await get_db()
+    try:
+        if not await settings_auth.is_password_configured(db):
+            raise HTTPException(409, "Pantomath hasn't been set up yet.")
+        if len(body.new_password or "") < settings_auth.MIN_PASSWORD_LENGTH:
+            raise HTTPException(400, f"Use at least {settings_auth.MIN_PASSWORD_LENGTH} characters.")
+        if await sign_in._matches_team_password(db, body.new_password):
+            raise HTTPException(400, "Use a different password from the team password.")
+        ok, error, new_code = await settings_auth.reset_via_recovery_code(db, body.recovery_code, body.new_password)
+        if not ok:
+            sign_in.record_failure(ip)
+            raise HTTPException(401, error or "That recovery code isn't right.")
+        sign_in.record_success(ip)
+        await db.execute("DELETE FROM sessions WHERE role = 'admin'")
+        await db.commit()
+        sign_in._cache.clear()
+        token, _ = await sign_in.create_session(db, "admin", body.remember, ip, request.headers.get("user-agent", ""))
+    finally:
+        await db.close()
+    _set_session_cookie(request, response, token, body.remember)
+    return {"ok": True, "role": "admin", "recovery_code": new_code, "settings_token": settings_auth.create_session()}
+
+
+@auth_router.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    db = await get_db()
+    try:
+        session = await sign_in.validate(db, request.cookies.get(sign_in.COOKIE_NAME))
+        if session:
+            await sign_in.revoke(db, session["id"])
+    finally:
+        await db.close()
+    response.delete_cookie(sign_in.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@protected_router.get("/api/auth/sessions")
+async def list_signed_in(request: Request):
+    """Signed-in devices and API keys, for Settings, Security."""
+    token = request.cookies.get(sign_in.COOKIE_NAME)
+    db = await get_db()
+    try:
+        rows = await sign_in.list_sessions(db, sign_in.hash_token(token) if token else None)
+    finally:
+        await db.close()
+    return {"devices": [r for r in rows if r["kind"] == "browser"], "api_keys": [r for r in rows if r["kind"] == "api"]}
+
+
+@protected_router.delete("/api/auth/sessions/{session_id}")
+async def revoke_signed_in(session_id: str):
+    db = await get_db()
+    try:
+        if not await sign_in.revoke(db, session_id):
+            raise HTTPException(404, "Already signed out")
+    finally:
+        await db.close()
+    return {"ok": True}
+
+
+@protected_router.post("/api/auth/sessions/sign-out-others")
+async def sign_out_others(request: Request):
+    db = await get_db()
+    try:
+        current = await sign_in.validate(db, request.cookies.get(sign_in.COOKIE_NAME))
+        removed = await sign_in.revoke_others(db, current["id"] if current else None)
+    finally:
+        await db.close()
+    return {"signed_out": removed}
+
+
+@protected_router.post("/api/auth/api-keys")
+async def create_api_key(body: ApiKeyBody, request: Request):
+    """A key for scripts (`Authorization: Bearer <key>`), shown once. Read-only: it can't change settings."""
+    label = " ".join((body.label or "").split())[:60]
+    if not label:
+        raise HTTPException(400, "Give the key a name, so you know what uses it")
+    db = await get_db()
+    try:
+        token, key_id = await sign_in.create_session(db, "api", False, _client_ip(request), "", kind="api", label=label)
+    finally:
+        await db.close()
+    return {"id": key_id, "key": token}
+
+
+@protected_router.put("/api/auth/team-password")
+async def set_team_password(body: TeamPasswordBody):
+    db = await get_db()
+    try:
+        await sign_in.set_team_password(db, body.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    finally:
+        await db.close()
+    return {"ok": True}
+
+
+@protected_router.delete("/api/auth/team-password")
+async def remove_team_password():
+    db = await get_db()
+    try:
+        await sign_in.clear_team_password(db)
+    finally:
+        await db.close()
+    return {"ok": True}
 
 @protected_router.get("/api/backup")
 async def backup_database():
@@ -1206,6 +1699,8 @@ class WebhookIn(BaseModel):
     min_severity: str = ""
     enabled: bool = True
     allow_insecure_tls: bool = False  # skip TLS certificate verification (self-signed certs, internal CAs)
+    only_affects_us: bool = False     # only items that mention something on Our stack
+    only_exploited: bool = False      # only items with a CVE on CISA's KEV catalog
     key: str | None = None  # optional — if set, this webhook is protected from creation
 
 
@@ -1230,8 +1725,8 @@ async def list_webhooks():
 
 @protected_router.post("/api/webhooks")
 async def add_webhook(webhook: WebhookIn):
-    if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high"):
-        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+    if webhook.min_severity and webhook.min_severity not in ("low", "medium", "high", "critical"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high, critical (or empty for any)")
     if webhook.key is not None and not webhook.key.strip():
         raise HTTPException(400, "Webhook key can't be blank")
 
@@ -1243,10 +1738,12 @@ async def add_webhook(webhook: WebhookIn):
         protected, key_salt, key_hash = 1, salt.hex(), hash_key(webhook.key, salt)
 
     await db.execute(
-        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash, allow_insecure_tls)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        """INSERT INTO webhooks (id, name, url, keyword, source_id, min_severity, enabled, protected, key_salt, key_hash,
+                                 allow_insecure_tls, only_affects_us, only_exploited)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (wid, webhook.name, webhook.url, webhook.keyword, webhook.source_id,
-         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash, int(webhook.allow_insecure_tls)),
+         webhook.min_severity, int(webhook.enabled), protected, key_salt, key_hash, int(webhook.allow_insecure_tls),
+         int(webhook.only_affects_us), int(webhook.only_exploited)),
     )
     await db.commit()
     await db.close()
@@ -1261,6 +1758,8 @@ class WebhookEditIn(BaseModel):
     min_severity: str | None = None
     enabled: bool | None = None
     allow_insecure_tls: bool | None = None  # skip TLS certificate verification (self-signed certs, internal CAs)
+    only_affects_us: bool | None = None
+    only_exploited: bool | None = None
     key: str | None = None            # current key — required to authorize any change to an already-protected webhook
     set_key: str | None = None        # sets a new key: adds protection if there wasn't any, or changes the existing one
     remove_protection: bool = False   # drops protection entirely (still requires the current `key`)
@@ -1275,8 +1774,8 @@ async def update_webhook(webhook_id: str, payload: WebhookEditIn):
     """Partial update, same pattern as sources — only fields present in the body are changed.
     A protected webhook requires the correct `key` before anything about it
     can change, including removing the protection itself."""
-    if payload.min_severity and payload.min_severity not in ("low", "medium", "high"):
-        raise HTTPException(400, "min_severity must be one of: low, medium, high (or empty for any)")
+    if payload.min_severity and payload.min_severity not in ("low", "medium", "high", "critical"):
+        raise HTTPException(400, "min_severity must be one of: low, medium, high, critical (or empty for any)")
 
     db = await get_db()
     cur = await db.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,))
@@ -1301,6 +1800,9 @@ async def update_webhook(webhook_id: str, payload: WebhookEditIn):
         updates["enabled"] = int(payload.enabled)
     if payload.allow_insecure_tls is not None:
         updates["allow_insecure_tls"] = int(payload.allow_insecure_tls)
+    for flag in ("only_affects_us", "only_exploited"):
+        if getattr(payload, flag) is not None:
+            updates[flag] = int(getattr(payload, flag))
 
     if payload.set_key is not None:
         if not payload.set_key.strip():
@@ -1454,9 +1956,18 @@ async def reprocess(payload: ReprocessIn | None = None):
     return result
 
 
-@router.websocket("/ws")
+@auth_router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
+    if not sign_in.open_dashboard():
+        db = await get_db()
+        try:
+            session = await sign_in.validate(db, websocket.cookies.get(sign_in.COOKIE_NAME))
+        finally:
+            await db.close()
+        if not session:
+            await websocket.close(code=4401)  # the page shows the sign-in screen on this code
+            return
     active_ws.append(websocket)
     try:
         while True:

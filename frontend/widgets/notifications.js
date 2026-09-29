@@ -8,7 +8,7 @@
  * about that in Settings rather than pretending otherwise.
  */
 
-const SEVERITY_RANK = { high: 3, medium: 2, low: 1 };
+const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 
 function notifPrefs() {
   return {

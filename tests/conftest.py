@@ -12,6 +12,10 @@ import os
 import tempfile
 
 _tmpdir = tempfile.mkdtemp(prefix="pantomath-test-")
+# 0.8.0 puts the whole dashboard behind sign-in. Most tests exercise the
+# data endpoints themselves, so they run with sign-in off;
+# tests/test_sign_in.py turns it back on for every one of its tests.
+os.environ.setdefault("PANTOMATH_OPEN_DASHBOARD", "1")
 os.environ["PANTOMATH_DB"] = os.path.join(_tmpdir, "test.db")
 os.environ["PANTOMATH_ICON_CACHE"] = os.path.join(_tmpdir, "icons")
 
@@ -29,6 +33,9 @@ async def fresh_db():
     await db.execute("DELETE FROM sources")
     await db.execute("DELETE FROM settings")
     await db.execute("DELETE FROM webhooks")
+    await db.execute("DELETE FROM watchlist")
+    await db.execute("DELETE FROM sessions")
+    await db.execute("DELETE FROM kev")
     # deep_extraction defaults ON in production (it's what makes IOC
     # extraction useful), but that means fetching each new item's link —
     # tests that don't care about this feature use fake http://example.com
@@ -39,6 +46,12 @@ async def fresh_db():
     await db.execute("INSERT INTO settings (key, value) VALUES ('deep_extraction', '0')")
     await db.commit()
     await db.close()
+    from pantomath.auth import sign_in
+    sign_in._failures.clear()
+    sign_in._cache.clear()
+    from pantomath.auth import setup_code
+    if os.path.exists(setup_code.code_path()):
+        os.remove(setup_code.code_path())
 
     # settings_auth's session tokens live in a module-level in-memory
     # dict, not the database — DELETE FROM settings above resets the

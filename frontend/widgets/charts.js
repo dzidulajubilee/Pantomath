@@ -5,7 +5,7 @@
  * can render just as well, and it keeps the dashboard fast to load.
  */
 
-const SEVERITY_COLORS = { high: 'var(--red)', medium: 'var(--amber)', low: 'var(--text-dim)' };
+const SEVERITY_COLORS = { critical: 'var(--sev-critical)', high: 'var(--red)', medium: 'var(--amber)', low: 'var(--text-dim)' };
 
 function renderBarChart(containerEl, data, opts) {
   opts = opts || {};

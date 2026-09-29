@@ -20,10 +20,15 @@ Matching rules, so the lists stay plain phrases:
 """
 import re
 
+# 0.8.0: the bare word "critical" is gone. It was the biggest source of
+# false alarms ("critical infrastructure", "critical of the government",
+# "a critical update to the app"); the phrases below keep the real cases.
 KEYWORDS_HIGH = [
-    "ransomware", "zero-day", "0-day", "critical",
-    "exploited in the wild", "rce", "actively exploited",
-    "remote code execution", "critical vulnerability",
+    "ransomware", "zero-day", "0-day",
+    "exploited in the wild", "actively exploited", "under active exploitation",
+    "rce", "remote code execution",
+    "critical vulnerability", "critical flaw", "critical bug", "critical severity", "critical-severity",
+    "critical security flaw", "critical security vulnerability", "critical security bug",
 ]
 
 KEYWORDS_MEDIUM = [
@@ -45,10 +50,19 @@ _HIGH = _keyword_pattern(KEYWORDS_HIGH)
 _MEDIUM = _keyword_pattern(KEYWORDS_MEDIUM)
 
 
-def score_severity(title: str, summary: str) -> str:
+def score_severity_detail(title: str, summary: str) -> tuple[str, str]:
+    """
+    The keyword rating and the phrase that decided it, e.g.
+    ("high", "zero-days") or ("low", ""). The phrase is shown to people as
+    part of the reason for an item's priority.
+    """
     text = f"{title} {summary}".lower()
-    if _HIGH.search(text):
-        return "high"
-    if _MEDIUM.search(text):
-        return "medium"
-    return "low"
+    for level, pattern in (("high", _HIGH), ("medium", _MEDIUM)):
+        match = pattern.search(text)
+        if match:
+            return level, match.group(0)
+    return "low", ""
+
+
+def score_severity(title: str, summary: str) -> str:
+    return score_severity_detail(title, summary)[0]

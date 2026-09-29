@@ -31,6 +31,14 @@ def build_payload(item: dict, webhook: dict) -> dict:
     small transform in front of this, which is out of scope here.
     """
     text = f"[{item.get('severity', 'low').upper()}] {item.get('source_name', 'Unknown source')}: {item.get('title', '')}"
+    # 0.8.1: say why it matters, so a message in a team channel is actionable on its own.
+    why = []
+    if item.get("watch_hits"):
+        why.append(f"Affects us: {', '.join(item['watch_hits'])}")
+    if item.get("kev_cves"):
+        why.append(f"Exploited: {', '.join(item['kev_cves'])}")
+    if why:
+        text += f" ({'; '.join(why)})"
     return {
         "text": text,
         "pantomath": {
@@ -45,10 +53,14 @@ def build_payload(item: dict, webhook: dict) -> dict:
             "vendors": item.get("vendors", []),
             "actors": item.get("actors", []),
             "cves": item.get("cves", []),
+            "watch_hits": item.get("watch_hits", []),   # Our stack entries it mentions ("Affects us")
+            "kev_cves": item.get("kev_cves", []),       # its CVEs on CISA's KEV catalog ("Exploited")
             "matched_webhook": {
                 "name": webhook.get("name"),
                 "keyword": webhook.get("keyword") or None,
                 "min_severity": webhook.get("min_severity") or None,
+                "only_affects_us": bool(webhook.get("only_affects_us")),
+                "only_exploited": bool(webhook.get("only_exploited")),
             },
         },
     }

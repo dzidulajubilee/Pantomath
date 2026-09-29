@@ -18,8 +18,11 @@ import asyncio
 
 from pantomath.feeds.article_fetcher import fetch_article_text_sync
 from pantomath.intelligence.ioc_extraction import extract_iocs
-from pantomath.intelligence.scoring import score_severity
+from pantomath.intelligence.kev import kev_hits, load_kev_set
+from pantomath.intelligence.priority import compute_priority
+from pantomath.intelligence.scoring import score_severity_detail
 from pantomath.intelligence.tagging import extract_tags
+from pantomath.intelligence.watchlist import load_watchlist, match_watchlist
 
 MAX_CONCURRENT_FETCHES = 5
 BATCH_SIZE = 200  # bounds memory + in-flight asyncio tasks regardless of table size
@@ -81,6 +84,8 @@ async def reprocess_items(db, source_id: str | None = None, use_deep_extraction:
         params.append(source_id)
     base_query += " ORDER BY id"
 
+    watchlist = await load_watchlist(db)
+    kev_set = await load_kev_set(db)
     processed = 0
     distinct_sources: set[str] = set()
     offset = 0
@@ -95,17 +100,22 @@ async def reprocess_items(db, source_id: str | None = None, use_deep_extraction:
 
         for row in batch:
             extraction_text = " ".join(filter(None, [row["summary"] or "", article_texts.get(row["id"], "")]))
-            severity = score_severity(row["title"], extraction_text)
+            content_severity, content_keyword = score_severity_detail(row["title"], extraction_text)
             vendors, actors = extract_tags(row["title"], extraction_text)
             iocs = extract_iocs(row["title"], extraction_text)
 
+            watch_hits = match_watchlist(watchlist, row["title"], row["summary"] or "")
+            kev_cves = kev_hits(iocs["cve"], kev_set)
+            severity = compute_priority(content_severity, bool(watch_hits), bool(kev_cves))
             await db.execute(
-                """UPDATE items SET severity=?, vendors=?, actors=?, cves=?, ips=?, hashes=?, emails=?
+                """UPDATE items SET severity=?, vendors=?, actors=?, cves=?, ips=?, hashes=?, emails=?,
+                                    watch_hits=?, kev_cves=?, content_severity=?, content_keyword=?
                    WHERE id=?""",
                 (
                     severity, ",".join(vendors), ",".join(actors),
                     ",".join(iocs["cve"]), ",".join(iocs["ip"]),
                     ",".join(iocs["hash"]), ",".join(iocs["email"]),
+                    ",".join(watch_hits), ",".join(kev_cves), content_severity, content_keyword,
                     row["id"],
                 ),
             )

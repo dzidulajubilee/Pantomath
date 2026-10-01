@@ -14,9 +14,11 @@ apt-get; there's no equivalent here yet for RPM-based systems.
 
 Safety principles followed throughout:
   - Every destructive step asks for confirmation unless --yes is passed.
-  - Nothing is ever deleted — the stock default site gets RENAMED
-    (default.disabled-by-pantomath), not removed, so it's trivially
-    reversible.
+  - Nothing is ever deleted — the stock default site is MOVED out of
+    sites-enabled/ into sites-available/default.disabled-by-pantomath, not
+    removed, so it's trivially reversible. (It has to leave sites-enabled/
+    entirely: nginx loads every file in that folder whatever its name, so a
+    rename inside it leaves the site active.)
   - nginx config is validated (nginx -t) BEFORE any reload — a broken
     config is caught and reported, not silently left half-applied.
   - Idempotent: safe to run more than once. An existing certificate is
@@ -38,6 +40,7 @@ SITES_ENABLED_DIR = pathlib.Path("/etc/nginx/sites-enabled")
 SITE_AVAILABLE = pathlib.Path("/etc/nginx/sites-available/pantomath")
 SITE_ENABLED = SITES_ENABLED_DIR / "pantomath"
 DEFAULT_SITE_ENABLED = SITES_ENABLED_DIR / "default"
+DISABLED_DEFAULT_NAME = "default.disabled-by-pantomath"
 SYSTEMD_OVERRIDE_DIR = pathlib.Path("/etc/systemd/system/pantomath.service.d")
 SYSTEMD_OVERRIDE_FILE = SYSTEMD_OVERRIDE_DIR / "override.conf"
 VENV_PYTHON = "/opt/pantomath/venv/bin/python3"
@@ -102,6 +105,49 @@ def _run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kwargs)
 
 
+def https_is_set_up() -> bool:
+    """True once `setup-https` has enabled Pantomath's nginx site."""
+    return SITE_ENABLED.exists()
+
+
+def _disabled_default_path() -> pathlib.Path:
+    return SITE_AVAILABLE.parent / DISABLED_DEFAULT_NAME
+
+
+def _move_to_sites_available(path: pathlib.Path) -> pathlib.Path:
+    """
+    Moves a site entry out of sites-enabled/ into sites-available/ under the
+    name default.disabled-by-pantomath, without losing where it pointed.
+    """
+    dest = _disabled_default_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        dest = dest.with_name(dest.name + ".old")
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
+    if path.is_symlink():
+        # A relative link would break when moved, so re-point at the absolute target.
+        target = path.resolve()
+        path.unlink()
+        dest.symlink_to(target)
+    else:
+        shutil.move(str(path), str(dest))
+    return dest
+
+
+def _repair_earlier_run() -> None:
+    """
+    Earlier versions only renamed the default site to
+    sites-enabled/default.disabled-by-pantomath, which nginx still loads. It
+    duplicates the default server (and its IPv6 listener fails nginx -t on
+    servers without IPv6). Move it out so the site is really off.
+    """
+    legacy = SITES_ENABLED_DIR / DISABLED_DEFAULT_NAME
+    if legacy.exists() or legacy.is_symlink():
+        dest = _move_to_sites_available(legacy)
+        print(f"Moved {legacy} out of sites-enabled to {dest} (an earlier version left it active).")
+
+
 def _try_systemctl(*args: str) -> bool:
     """
     Best-effort systemctl call — returns True on success. Failures are
@@ -134,6 +180,8 @@ def setup_https(port: int = 7373, assume_yes: bool = False) -> None:
     else:
         print("nginx is already installed.")
 
+    _repair_earlier_run()
+
     if SITES_ENABLED_DIR.exists():
         other_sites = [p for p in SITES_ENABLED_DIR.iterdir() if p.name not in ("default", "pantomath")]
         if other_sites:
@@ -149,9 +197,8 @@ def setup_https(port: int = 7373, assume_yes: bool = False) -> None:
             "for any request that doesn't match a specific server_name. Disable it?",
             assume_yes,
         ):
-            backup = SITES_ENABLED_DIR / "default.disabled-by-pantomath"
-            DEFAULT_SITE_ENABLED.rename(backup)
-            print(f"Moved to {backup} (not deleted — restore by renaming it back if needed).")
+            backup = _move_to_sites_available(DEFAULT_SITE_ENABLED)
+            print(f"Moved to {backup} (not deleted — restore by moving it back into {SITES_ENABLED_DIR}).")
         else:
             print("Leaving the default site enabled — you may see the nginx welcome page instead of Pantomath.")
 

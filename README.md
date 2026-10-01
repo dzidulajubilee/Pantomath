@@ -132,7 +132,7 @@ stack or the catalog changes. To change the wording rules, edit the lists in
 - Linux on x86_64 with systemd. The Debian/Ubuntu package is built and
   tested on Ubuntu 24.04. An RPM spec is included but untested (see
   Known limitations).
-- Python 3.10 to 3.13 with `venv` (on Debian/Ubuntu: `python3-venv`). The
+- Python 3.10 to 3.14 with `venv` (on Debian/Ubuntu: `python3-venv`). The
   package bundles wheels for exactly these versions so it installs offline.
 - nginx only if you want HTTPS through `pantomath-admin setup-https`, which
   installs it for you.
@@ -146,8 +146,12 @@ sudo apt install python3-venv git
 git clone https://github.com/dzidulajubilee/Pantomath.git
 cd Pantomath
 ./build.sh deb                                  # -> dist/pantomath_<version>_amd64.deb
-sudo dpkg -i dist/pantomath_*_amd64.deb
+sudo apt install ./dist/pantomath_*_amd64.deb
 ```
+
+Use `apt install ./…`, not `dpkg -i`: only `apt` fetches the package's
+dependencies (such as `python3-venv`). With `dpkg -i` on a fresh server the
+package is left half-installed; if that happens, run `sudo apt install -f`.
 
 `build.sh` reads the version with Python 3.11's `tomllib`. On Python 3.10
 (Ubuntu 22.04), pass it yourself: `VERSION=0.6.0 ./build.sh deb`.
@@ -261,7 +265,7 @@ only read when the database has no sources at all.
 
 ## Upgrading
 
-Install the new package over the old one with `sudo dpkg -i`. Your data and
+Install the new package over the old one with `sudo apt install ./pantomath_<version>_amd64.deb`. Your data and
 settings are kept, and any database changes are applied automatically when
 the service starts. Then:
 

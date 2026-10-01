@@ -172,16 +172,56 @@ def test_config_raises_body_size_limit_above_pantomaths_own_restore_upload_cap()
     )
 
 
-def test_default_site_is_renamed_not_deleted_when_confirmed(monkeypatch):
+def test_default_site_is_moved_out_of_sites_enabled_not_deleted(monkeypatch):
+    """
+    Real bug: nginx loads EVERY file in sites-enabled/, so renaming the default
+    site to default.disabled-by-pantomath inside that folder left it active
+    (http:// showed the nginx welcome page). It must leave sites-enabled/
+    entirely, into sites-available/, and still not be deleted.
+    """
     https_setup.DEFAULT_SITE_ENABLED.write_text("stock nginx default site")
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
     https_setup.setup_https(assume_yes=False)
 
     assert not https_setup.DEFAULT_SITE_ENABLED.exists()
-    backup = https_setup.SITES_ENABLED_DIR / "default.disabled-by-pantomath"
-    assert backup.exists(), "the default site must be renamed (reversible), never deleted"
+    assert not (https_setup.SITES_ENABLED_DIR / "default.disabled-by-pantomath").exists()
+    assert [p.name for p in https_setup.SITES_ENABLED_DIR.iterdir()] == ["pantomath"], \
+        "nothing but pantomath may remain in sites-enabled/"
+    backup = https_setup.SITE_AVAILABLE.parent / "default.disabled-by-pantomath"
     assert backup.read_text() == "stock nginx default site"
+
+
+def test_default_site_symlink_keeps_pointing_at_the_real_file(tmp_path):
+    """On Ubuntu sites-enabled/default is a relative symlink into sites-available/."""
+    https_setup.SITE_AVAILABLE.parent.mkdir(parents=True, exist_ok=True)
+    real = https_setup.SITE_AVAILABLE.parent / "default"
+    real.write_text("stock nginx default site")
+    https_setup.DEFAULT_SITE_ENABLED.symlink_to("../sites-available/default")
+
+    https_setup.setup_https(assume_yes=True)
+
+    assert not https_setup.DEFAULT_SITE_ENABLED.is_symlink()
+    moved = https_setup.SITE_AVAILABLE.parent / "default.disabled-by-pantomath"
+    assert moved.is_symlink() and moved.resolve() == real.resolve()
+    assert real.read_text() == "stock nginx default site"
+
+
+def test_site_left_in_sites_enabled_by_an_earlier_version_is_repaired():
+    """Servers where the old version already ran have default.disabled-by-pantomath inside sites-enabled/."""
+    legacy = https_setup.SITES_ENABLED_DIR / "default.disabled-by-pantomath"
+    legacy.write_text("stock nginx default site")
+
+    https_setup.setup_https(assume_yes=True)
+
+    assert not legacy.exists()
+    assert (https_setup.SITE_AVAILABLE.parent / "default.disabled-by-pantomath").read_text() == "stock nginx default site"
+
+
+def test_https_is_reported_as_set_up_only_once_the_site_is_enabled():
+    assert https_setup.https_is_set_up() is False
+    https_setup.setup_https(assume_yes=True)
+    assert https_setup.https_is_set_up() is True
 
 
 def test_default_site_is_left_alone_when_declined(monkeypatch):

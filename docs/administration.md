@@ -28,7 +28,7 @@ Installing, securing, running and upgrading Pantomath. For using it, see the
 - Linux on x86_64 with systemd. The Debian/Ubuntu package is built and tested
   on Ubuntu 24.04. An RPM spec exists but is untested (see the README's known
   limitations).
-- Python 3.10 to 3.13 with `venv` (Debian/Ubuntu: the `python3-venv`
+- Python 3.10 to 3.14 with `venv` (Debian/Ubuntu: the `python3-venv`
   package). The package bundles Python wheels for exactly these versions, so
   it installs without internet access.
 - Disk: the database grows with history; a few hundred MB covers a long
@@ -46,15 +46,18 @@ sudo apt install python3-venv git
 git clone https://github.com/dzidulajubilee/Pantomath.git
 cd Pantomath
 ./build.sh deb                      # -> dist/pantomath_<version>_amd64.deb
-sudo dpkg -i dist/pantomath_*_amd64.deb
+sudo apt install ./dist/pantomath_*_amd64.deb
 ```
+
+Install with `apt install ./…`, not `dpkg -i`: only `apt` installs the
+package's dependencies (such as `python3-venv`).
 
 `build.sh` reads the version with Python 3.11's `tomllib`. On Python 3.10
 (Ubuntu 22.04), pass it yourself: `VERSION=0.8.1 ./build.sh deb`.
 
 **A ready-made package:** copy it to the server, compare `sha256sum` with the
 published checksum (a truncated copy fails halfway through unpacking), then
-`sudo dpkg -i pantomath_<version>_amd64.deb`.
+`sudo apt install ./pantomath_<version>_amd64.deb`.
 
 **What the installer does:**
 
@@ -227,7 +230,7 @@ It:
 - creates a self-signed certificate (an existing one is kept, so anything that
   already trusts it keeps working);
 - adds an nginx site that forwards to Pantomath;
-- renames nginx's stock default site rather than deleting it;
+- turns off nginx's stock default site by moving it to `/etc/nginx/sites-available/default.disabled-by-pantomath` (not deleted; move it back to re-enable). It also repairs servers where an earlier version only renamed it inside `sites-enabled/`, which left it active;
 - checks the configuration with `nginx -t` before reloading;
 - offers to restrict Pantomath to `127.0.0.1`, so nginx becomes the only way
   in (recommended).
@@ -344,7 +347,7 @@ every stored item with the current rules, without re-reading feeds.
 Install the new package over the old one:
 
 ```bash
-sudo dpkg -i pantomath_<new version>_amd64.deb
+sudo apt install ./pantomath_<new version>_amd64.deb
 ```
 
 Data and settings are kept, database changes are applied automatically when
@@ -409,11 +412,19 @@ only readable in Settings; making the server fetch an arbitrary address
 | Exploited items never appear | Settings, Exploited vulnerabilities shows the download status; without internet, set an internal catalog address |
 | Desktop notifications blocked | They need HTTPS (section 6) |
 | The service won't start after a manual database operation | Files in `/var/lib/pantomath` owned by root: `sudo chown -R pantomath:pantomath /var/lib/pantomath` |
+| `dpkg -i` left the package half-installed ("python3-venv" or another dependency missing) | Run `sudo apt install -f`, or reinstall with `sudo apt install ./pantomath_<version>_amd64.deb`, which installs the dependencies |
+| `pantomath-admin` says it can't open the database | The data belongs to the `pantomath` user: run it with `sudo`, for example `sudo pantomath-admin setup-code` |
+| After `setup-https`, `http://host:7373` no longer answers | Expected: the service now listens on 127.0.0.1 only. Use `https://host/` |
 | Restore refused | Not a Pantomath database, over 2 GB, or not enough free disk space for the upload plus a safety copy |
 
 ## 14. Uninstalling
 
 ```bash
 sudo apt remove pantomath      # keeps /var/lib/pantomath (your data)
-sudo apt purge pantomath       # removes the data too
+sudo apt purge pantomath       # removes the data too, and undoes setup-https:
+                               # the nginx site, certificate and loopback override go,
+                               # and nginx's default site is switched back on
 ```
+
+`apt remove` also removes the `pantomath-admin` command and the private
+Python environment; only your data is kept.

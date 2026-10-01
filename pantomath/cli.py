@@ -43,8 +43,37 @@ def _as_service_user() -> None:
     os.setuid(owner.st_uid)
 
 
+def _require_database_access(command: str) -> None:
+    """
+    A normal user can't open the service's database (its folder belongs to the
+    `pantomath` user), so say so plainly instead of dying in a SQLite
+    traceback. Root is always allowed, and so is anyone who can write there
+    (e.g. a development checkout with PANTOMATH_DB pointing at their own file).
+    """
+    if os.geteuid() == 0:
+        return
+    from pantomath.database.sqlite import DB_PATH
+
+    folder = os.path.dirname(os.path.abspath(DB_PATH))
+    if os.path.exists(DB_PATH):
+        usable = os.access(DB_PATH, os.R_OK | os.W_OK) and os.access(folder, os.W_OK)
+    else:
+        usable = os.access(folder, os.W_OK)
+    if not usable:
+        print(f"Can't open the Pantomath database ({DB_PATH}) as this user.")
+        print(f"Run it with sudo: sudo pantomath-admin {command}")
+        sys.exit(1)
+
+
 def _dashboard_url() -> str:
-    return f"http://{socket.gethostname()}:{os.environ.get('PANTOMATH_PORT', '7373')}"
+    from pantomath.https_setup import https_is_set_up
+
+    host = socket.gethostname()
+    if https_is_set_up():
+        # Once nginx fronts Pantomath and the service is restricted to
+        # 127.0.0.1, the plain-HTTP port no longer answers from the network.
+        return f"https://{host}"
+    return f"http://{host}:{os.environ.get('PANTOMATH_PORT', '7373')}"
 
 
 async def show_setup_code(bare: bool = False) -> int:
@@ -164,6 +193,7 @@ def main() -> None:
             sys.exit(1)
         return
 
+    _require_database_access(args.command)
     _as_service_user()
     if args.command == "setup-code":
         sys.exit(asyncio.run(show_setup_code(bare=args.bare)))

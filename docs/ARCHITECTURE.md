@@ -42,8 +42,7 @@ Pantomath/
 ├── config/feeds.json      # optional starter sources — EMPTY by default
 ├── icons/                 # app icon for OS-level packaging (pixmaps)
 ├── installer/
-│   ├── deb/                # control file, postinst/prerm/postrm, systemd unit
-│   └── rpm/                # nfpm.yaml spec (builds rpm without rpmbuild) + same scripts
+│   └── deb/                # control file, postinst/prerm/postrm, systemd unit
 ├── tests/                 # pytest suite — see conftest.py for the env-var-before-import setup
 ├── pyproject.toml         # package metadata, version, deps, ruff/pytest config — single source of truth
 ├── Makefile               # make dev / test / lint / fmt / package

@@ -6,8 +6,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the codebase is
 organized and why. The short version: `pantomath/` is the installable
 Python package (FastAPI backend, connectors, database, intelligence
 processing); `frontend/` is a plain HTML/CSS/JS single-page app served by
-it, no build step; `installer/` and `build.sh` produce `.deb`/`.rpm`
-packages; `tests/` is the pytest suite.
+it, no build step; `installer/` and `build.sh` produce the `.deb`
+package; `tests/` is the pytest suite.
 
 ## Setup
 
@@ -110,13 +110,12 @@ retrieval, parsing, and storage.
 ## Building packages
 
 ```bash
-make package        # both .deb and .rpm
-./build.sh deb       # .deb only — dpkg-deb, no extra tools needed
-./build.sh rpm       # .rpm only — requires nfpm (https://nfpm.goreleaser.com)
+make package        # the .deb (same as ./build.sh deb)
+./build.sh deb       # dpkg-deb, no extra tools needed
 ```
 
 Version comes from `pyproject.toml`'s `[project] version` — bump it there,
-nowhere else. `build.sh` (both `deb` and `rpm` targets) reads it
+nowhere else. `build.sh` reads it
 automatically via `tomllib`, so nothing else needs updating by hand — no
 version string is hardcoded anywhere else in the project.
 

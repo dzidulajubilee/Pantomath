@@ -116,7 +116,7 @@ frontend/
   themes/pantomath.css   design tokens and all styles
   assets/                bundled fonts (IBM Plex Sans) and icons; nothing loads from a CDN
 config/feeds.json        optional starter sources for new installs (empty by default)
-installer/               Debian and RPM scripts, systemd unit, bundled wheels
+installer/               Debian package scripts, systemd unit, bundled wheels
 tests/                   the pytest suite
 ```
 
@@ -493,7 +493,7 @@ sections shown one at a time.
 
 ## 13. Packaging
 
-`build.sh deb` (or `rpm`, through nfpm) stages the application under
+`build.sh deb` stages the application under
 `/opt/pantomath`, bundles Python wheels for 3.10 to 3.14 so installs work
 offline, strips bytecode caches, and builds the package. The install scripts
 are described in the [administration guide](administration.md#2-installing).

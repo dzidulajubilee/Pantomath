@@ -1,8 +1,7 @@
 #!/bin/bash
 # Build Pantomath packages.
 #   ./build.sh deb     -> dist/pantomath_<ver>_amd64.deb   (dpkg-deb, no extra tools)
-#   ./build.sh rpm     -> dist/pantomath-<ver>.x86_64.rpm  (requires nfpm)
-#   ./build.sh all     -> both
+#   ./build.sh all     -> the same (kept so existing scripts and `make package` work)
 #
 # Version comes from pyproject.toml — the single source of truth. Bump it
 # there and every package format picks it up automatically; nothing else
@@ -44,19 +43,8 @@ build_deb() {
     echo "==> Built $DIST/pantomath_${VERSION}_amd64.deb"
 }
 
-build_rpm() {
-    echo "==> Building .rpm ${VERSION}"
-    if ! command -v nfpm >/dev/null 2>&1; then
-        echo "nfpm not found. Install it: https://nfpm.goreleaser.com/install/"
-        exit 1
-    fi
-    VERSION="$VERSION" nfpm package --config "$ROOT/installer/rpm/nfpm.yaml" --packager rpm --target "$DIST/"
-    echo "==> Built rpm in $DIST/"
-}
-
 case "${1:-all}" in
     deb) build_deb ;;
-    rpm) build_rpm ;;
-    all) build_deb; build_rpm ;;
-    *) echo "usage: $0 [deb|rpm|all]"; exit 1 ;;
+    all) build_deb ;;
+    *) echo "usage: $0 [deb|all]"; exit 1 ;;
 esac

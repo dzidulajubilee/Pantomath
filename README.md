@@ -130,8 +130,7 @@ stack or the catalog changes. To change the wording rules, edit the lists in
 ## Requirements
 
 - Linux on x86_64 with systemd. The Debian/Ubuntu package is built and
-  tested on Ubuntu 24.04. An RPM spec is included but untested (see
-  Known limitations).
+  tested on Ubuntu 24.04.
 - Python 3.10 to 3.14 with `venv` (on Debian/Ubuntu: `python3-venv`). The
   package bundles wheels for exactly these versions so it installs offline.
 - nginx only if you want HTTPS through `pantomath-admin setup-https`, which
@@ -154,7 +153,7 @@ dependencies (such as `python3-venv`). With `dpkg -i` on a fresh server the
 package is left half-installed; if that happens, run `sudo apt install -f`.
 
 `build.sh` reads the version with Python 3.11's `tomllib`. On Python 3.10
-(Ubuntu 22.04), pass it yourself: `VERSION=0.6.0 ./build.sh deb`.
+(Ubuntu 22.04), pass it yourself: `VERSION=0.9.0 ./build.sh deb`.
 
 If you copy a ready-made `.deb` onto a server instead, check its
 `sha256sum` against the published one first. A truncated download fails
@@ -278,6 +277,9 @@ the service starts. Then:
    screen in with "Remember this device".
 4. **0.8.1**: nothing to do, unless the install never had a Settings
    password (then use `sudo pantomath-admin setup-code`).
+5. **0.9.0**: if you ran `sudo pantomath-admin setup-https` before, run it
+   again: earlier versions left nginx's default site active, so plain
+   `http://` showed the nginx welcome page instead of redirecting to HTTPS.
 
 ## Operating
 
@@ -303,7 +305,6 @@ including data: `sudo apt purge pantomath`.
 
 ```bash
 ./build.sh deb        # Debian/Ubuntu package, needs only dpkg-deb
-./build.sh rpm        # RPM, needs nfpm (https://nfpm.goreleaser.com/)
 
 make dev              # venv/ with an editable install and dev tools
 source venv/bin/activate
@@ -338,11 +339,21 @@ How it fits together, and why things are the way they are:
   you add a source; it can't fetch what a feed no longer lists.
 - **Desktop notifications** only fire while a dashboard tab is open.
   Webhooks work without a browser.
-- **RPM:** the spec depends on a `python3-venv` package that RHEL and Fedora
-  don't have, and RHEL 9's default Python (3.9) is older than Pantomath
-  needs. It hasn't been tested.
 
 ## Changelog
+
+**0.9.0** — Installation fixes. Install and upgrade with `sudo apt install
+./pantomath_<version>_amd64.deb`, which also installs `python3-venv`
+(`dpkg -i` left a fresh server half-installed). The package bundles wheels
+for Python 3.10 to 3.14, so it installs offline on Ubuntu 26.04 too.
+`pantomath-admin` run without sudo says to use sudo instead of hanging after a
+traceback, and a damaged database no longer hangs it or the service.
+`setup-https` really disables nginx's default site, and the installer and
+`setup-code` show the HTTPS address once it's set up. Upgrades no longer keep
+code removed from a release; the program files belong to root; `apt remove`
+takes the `pantomath-admin` command with it (data is kept), and `apt purge`
+also removes Pantomath's nginx site and restores the default one. RPM
+packaging is dropped.
 
 **0.8.1** — First-run setup needs a one-time setup code printed by the
 installer (`pantomath-admin setup-code` shows it again), so nobody else can

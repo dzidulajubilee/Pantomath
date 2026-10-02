@@ -10,7 +10,7 @@ nginx configuration, which could conflict with an nginx setup already
 serving other sites on the same box, and forcing nginx as a hard
 dependency of every install would be a much bigger footprint change than
 "install a Python app" implies. Debian/Ubuntu only — installs nginx via
-apt-get; there's no equivalent here yet for RPM-based systems.
+apt-get.
 
 Safety principles followed throughout:
   - Every destructive step asks for confirmation unless --yes is passed.

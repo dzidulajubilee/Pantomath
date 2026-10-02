@@ -26,8 +26,7 @@ Installing, securing, running and upgrading Pantomath. For using it, see the
 ## 1. Requirements
 
 - Linux on x86_64 with systemd. The Debian/Ubuntu package is built and tested
-  on Ubuntu 24.04. An RPM spec exists but is untested (see the README's known
-  limitations).
+  on Ubuntu 24.04.
 - Python 3.10 to 3.14 with `venv` (Debian/Ubuntu: the `python3-venv`
   package). The package bundles Python wheels for exactly these versions, so
   it installs without internet access.
@@ -53,7 +52,7 @@ Install with `apt install ./…`, not `dpkg -i`: only `apt` installs the
 package's dependencies (such as `python3-venv`).
 
 `build.sh` reads the version with Python 3.11's `tomllib`. On Python 3.10
-(Ubuntu 22.04), pass it yourself: `VERSION=0.8.1 ./build.sh deb`.
+(Ubuntu 22.04), pass it yourself: `VERSION=0.9.0 ./build.sh deb`.
 
 **A ready-made package:** copy it to the server, compare `sha256sum` with the
 published checksum (a truncated copy fails halfway through unpacking), then
@@ -363,6 +362,7 @@ once (Ctrl+Shift+R).
 | 0.7.0 | Add Our stack; check the CISA catalog downloads |
 | 0.8.0 | Sign-in is now required. Sign in with the Settings password, set a team password, sign the wall screen in again. Optionally *Reprocess all* (tighter wording rules) |
 | 0.8.1 | Nothing, unless the install never had a Settings password: then use `sudo pantomath-admin setup-code` |
+| 0.9.0 | If you ran `setup-https` before, run it again so nginx's default site is really disabled |
 
 ## 11. Monitoring
 

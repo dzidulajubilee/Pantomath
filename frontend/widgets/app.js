@@ -2099,10 +2099,15 @@ async function loadFeedPage(view) {
   applyFeedPageFilter(cfg);
 }
 
+// Same rule as the server's keyword filter: every word must appear
+// somewhere in the item, in any order and in any field.
 function itemMatches(i, text) {
   if (!text) return true;
-  return [i.title, i.source_name, stripHtml(i.summary || ''), ...i.cves, ...i.ips, ...i.hashes, ...i.vendors, ...i.actors, ...(i.watch_hits || [])]
-    .some(v => (v || '').toLowerCase().includes(text));
+  const haystack = [
+    i.title, i.source_name, stripHtml(i.summary || ''), ...i.cves, ...i.ips, ...i.hashes, ...(i.emails || []),
+    ...i.vendors, ...i.actors, ...(i.watch_hits || []), ...(i.kev_cves || []),
+  ].map(v => (v || '').toLowerCase()).join('\n');
+  return text.split(/\s+/).filter(Boolean).every(word => haystack.includes(word));
 }
 
 function applyFeedPageFilter(cfg) {

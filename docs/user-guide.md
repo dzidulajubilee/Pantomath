@@ -189,7 +189,7 @@ feed are listed newest-published first.
 
 **Filters** (combine freely):
 
-- **Search box** on the page: keyword, CVE, vendor or actor.
+- **Search box** on the page: one or more words, matched in any order against the title, summary, source, vendors, actors, indicators and Our stack matches. Every word has to match, so `fortinet exploited` narrows rather than widens.
 - **Priority toggles**: Critical, High, Medium, Low. Click to hide or show a level.
 - **Affects us** and **Exploited**: show only those items.
 - **All sources / All categories**: one feed, or one kind of feed.

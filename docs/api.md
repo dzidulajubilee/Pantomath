@@ -85,7 +85,7 @@ published).
 |---|---|
 | `limit` (100), `offset` (0) | Paging |
 | `severity` | One priority or a comma-separated list: `critical,high` |
-| `keyword` | Text in the title or summary |
+| `keyword` | Words to find; each must appear in the title, summary, source name, vendors, actors, indicators, Our stack matches or KEV CVEs, in any order |
 | `source_id`, `category` | One source; one source category (`general`, `government`, `vulnerability`, `news`, `malware`, `research`) |
 | `vendor`, `actor` | Items tagged with this vendor or threat actor |
 | `ioc_type` + `ioc_value` | Items mentioning an indicator; type `cve`, `ip`, `hash` or `email` |

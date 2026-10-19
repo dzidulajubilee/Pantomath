@@ -465,6 +465,14 @@ async def import_sources(payload: dict):
 
 # -------------------------------------------------------------------- items
 
+# What the keyword filter searches: the text, the source, and everything
+# Pantomath extracted from the item.
+_KEYWORD_COLUMNS = (
+    "items.title", "items.summary", "sources.name", "items.vendors", "items.actors",
+    "items.cves", "items.ips", "items.hashes", "items.emails", "items.watch_hits", "items.kev_cves",
+)
+
+
 def _build_item_conditions(
     source_id=None, category=None, severity=None, keyword=None, vendor=None, actor=None,
     ioc_type=None, ioc_value=None, has_cve=False, has_actor=False, bookmarked_only=False,
@@ -493,8 +501,13 @@ def _build_item_conditions(
             conditions.append(f"items.severity IN ({placeholders})")
             params += values
     if keyword:
-        conditions.append("(items.title LIKE ? OR items.summary LIKE ?)")
-        params += [f"%{keyword}%", f"%{keyword}%"]
+        # Every word must appear somewhere in the item, in any order and in
+        # any field: "fortinet exploited" finds an item tagged Fortinet whose
+        # title says exploited.
+        for word in keyword.split():
+            pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            conditions.append("(" + " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in _KEYWORD_COLUMNS) + ")")
+            params += [pattern] * len(_KEYWORD_COLUMNS)
     if vendor:
         conditions.append("(',' || items.vendors || ',') LIKE ?")
         params.append(f"%,{vendor},%")

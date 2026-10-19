@@ -236,7 +236,7 @@ const CATEGORY_COLORS = {
 
 const VIEWS = [
   'dashboard', 'affects-us', 'exploited', 'live-feed', 'critical', 'vulnerabilities', 'malware',
-  'ransomware', 'threat-actors', 'vendors', 'iocs', 'saved', 'sources', 'analytics', 'settings'
+  'ransomware', 'threat-actors', 'vendors', 'iocs', 'ioc-database', 'saved', 'sources', 'analytics', 'settings'
 ];
 const VIEW_LOADERS = {
   'dashboard': loadDashboard,
@@ -250,6 +250,7 @@ const VIEW_LOADERS = {
   'threat-actors': loadThreatActors,
   'vendors': loadVendors,
   'iocs': loadIOCsView,
+  'ioc-database': () => loadIocDatabase(),  // widgets/ioc-database.js
   'saved': () => loadFeedPage('saved'),
   'sources': loadSourcesView,
   'analytics': loadAnalytics,
@@ -2981,7 +2982,7 @@ async function loadSecuritySettings() {
   const [statusRes, sessionsRes] = await Promise.all([fetch('/api/auth/status'), fetch('/api/auth/sessions')]);
   if (!sessionsRes.ok) return;
   const status = await statusRes.json();
-  const { devices, api_keys: keys } = await sessionsRes.json();
+  const { devices, api_keys: keys, siem_keys: siemKeys = [] } = await sessionsRes.json();
   document.getElementById('teamPwHint').textContent = status.team_password
     ? "Set. People sign in with it to view Pantomath; it can't change settings."
     : 'Not set, so only the Settings password can sign in, and everyone who views Pantomath can also change it. Set a team password for viewers.';
@@ -2998,13 +2999,15 @@ async function loadSecuritySettings() {
       <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(d.id)}" data-current="${d.current ? 1 : 0}">Sign out</button>
     </div>`;
   }).join('');
-  document.getElementById('apiKeyList').innerHTML = keys.map(k => `<div class="device-row">
+  const keyRow = k => `<div class="device-row">
       <span class="device-icon">${KEY_ICON}</span>
       <div><div class="device-name">${escapeHtml(k.label)}</div>
         <div class="device-sub">Created ${escapeHtml(timeAgo(k.created_at))}, last used ${escapeHtml(timeAgo(k.last_seen))}.</div></div>
       <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(k.id)}">Revoke</button>
-    </div>`).join('');
-  document.querySelectorAll('#deviceList [data-revoke], #apiKeyList [data-revoke]').forEach(btn => {
+    </div>`;
+  document.getElementById('apiKeyList').innerHTML = keys.map(keyRow).join('');
+  document.getElementById('siemKeyList').innerHTML = siemKeys.map(keyRow).join('');
+  document.querySelectorAll('#deviceList [data-revoke], #apiKeyList [data-revoke], #siemKeyList [data-revoke]').forEach(btn => {
     btn.onclick = async () => {
       const own = btn.dataset.current === '1';
       if (own && !confirm('Sign out this device?')) return;

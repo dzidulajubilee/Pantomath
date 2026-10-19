@@ -256,6 +256,7 @@ firewall either way.
 | Article pages linked from feeds | Once per new item, with deep extraction on | Better ratings and indicators (8 s timeout, first 400 KB) |
 | `www.google.com/s2/favicons` | Once per source (cached; a failure is retried after an hour) | Source icons |
 | `www.cisa.gov` | Once a day (hourly retries after a failure) | The Exploited marks |
+| Each IOC feed's address | On the feed's own schedule (at most every 15 minutes) | The IOC database |
 | Each webhook's address | When a new item matches | Alerts |
 | `pypi.org` | At install, only if the package has no bundled wheels | Installing |
 
@@ -264,12 +265,19 @@ extraction off if article pages aren't reachable; source icons fall back to
 colour dots (or set an *Icon URL* per source); point Settings, Exploited
 vulnerabilities, *Catalog address* at an internal copy of CISA's JSON file,
 refreshed however you like (for example a daily `curl` on a machine that can
-reach `cisa.gov`).
+reach `cisa.gov`). IOC feeds work the same way: point each one at an internal
+mirror of the list.
 
 Feed fetching limits: 15 s without data ends a read, 45 s is the most one
 feed may take in total, and a feed larger than 10 MB is rejected. Sources are
 checked one after another, so a slow or broken feed can delay the others by
 at most about a minute, but it can never stall collection.
+
+IOC feeds have their own timer, so they never delay RSS polling. Their
+limits are those of the CISA download: 30 s without data ends a read, 120 s is
+the most a download may take, and a list over its size limit (30 MB unless
+the feed raises it, up to 500 MB) is rejected. Pantomath asks the server
+whether a list changed since the last download and skips it if not.
 
 ## 8. Running the service
 
@@ -286,6 +294,7 @@ restart):
 |---|---|---|
 | `PANTOMATH_PORT` | `7373` | Port to listen on |
 | `PANTOMATH_DB` | `/var/lib/pantomath/pantomath.db` | Database file (the setup code and icons live next to it) |
+| `PANTOMATH_IOC_DB` | `ioc.db` next to the database | The IOC database's file |
 | `PANTOMATH_ICON_CACHE` | `icons/` next to the database | Where source icons are cached |
 | `PANTOMATH_OPEN_DASHBOARD` | unset | `1` turns Pantomath's own sign-in off (section 4) |
 
@@ -309,6 +318,7 @@ and a private `/tmp`.
 | Path | Contents |
 |---|---|
 | `/var/lib/pantomath/pantomath.db` | Everything: items, sources, settings, webhooks, Our stack, CISA's catalog, sign-ins. SQLite in WAL mode, so `-wal` and `-shm` files sit next to it |
+| `/var/lib/pantomath/ioc.db` | The IOC database (1.0.0): indicators, their sightings, IOC feeds (with their keys) and the allowlist. Its own file, so a large feed import never makes the dashboard wait. Created empty on first start |
 | `/var/lib/pantomath/icons/` | Cached source icons |
 | `/var/lib/pantomath/setup-code` | The one-time setup code, only until first-run setup is done |
 | `/opt/pantomath/` | The application and its Python environment |
@@ -328,6 +338,20 @@ and a private `/tmp`.
 A backup contains the password hashes, sign-in records and webhook
 addresses, so store it as carefully as the server itself.
 
+**The IOC database is not in that backup.** Most of it is feed data that can
+be downloaded again; what can't is what your team entered: indicators added
+by hand, false-positive marks, the allowlist and the feeds' settings and
+keys. Back it up the same way:
+
+```bash
+sudo -u pantomath sqlite3 /var/lib/pantomath/ioc.db ".backup /tmp/pantomath-ioc.db"
+sudo mv /tmp/pantomath-ioc.db /var/backups/pantomath-ioc-$(date +%F).db
+```
+
+To restore it, stop the service, put the file back as
+`/var/lib/pantomath/ioc.db` (owned by `pantomath`), and start it again.
+Restoring the main backup from the browser leaves `ioc.db` as it is.
+
 **Restoring:** Settings, Backup and restore, **Restore from file**. The file
 must be a Pantomath SQLite database (checked before anything changes) of at
 most 2 GB. The current database is copied to a timestamped safety copy next
@@ -337,6 +361,15 @@ priority worked out).
 
 **Retention:** nothing is deleted unless you choose a limit in Settings,
 Storage, *Keep items for*. The check runs about once an hour.
+
+In the IOC database, indicators expire when no source has reported them for
+their lifetime (IPs 30 days; domains, URLs and email senders 90; JA3, JA4 and
+certificates 180; hashes never, unless a feed sets its own; a feed or a
+manual entry can also be set to never expire), and expired ones are deleted
+90 days later. Settings, IOC feeds, *Keep expired indicators for* changes that
+(30 days to 2 years, or forever). False-positive marks are always kept. With a
+limit, the file stops growing for ever; with *Forever* it keeps the whole
+history and only grows: plan for roughly 0.5 GB per million indicators.
 
 **Reprocessing:** Settings, Storage, *Reprocess all* re-rates and re-extracts
 every stored item with the current rules, without re-reading feeds.
@@ -387,17 +420,42 @@ once (Ctrl+Shift+R).
       few people; the recovery code stored in a password manager.
 - [ ] Remember this device only on the wall screen and personal computers.
 - [ ] Review Settings, Security, *Signed-in devices* now and then; revoke
-      API keys no longer used.
+      API keys and SIEM keys no longer used.
+- [ ] Give each SIEM or firewall its own SIEM key, so one can be revoked
+      alone. Optionally let only their networks reach `/api/v1` (below).
 - [ ] Backups stored as carefully as the server.
 - [ ] Feed addresses that contain API keys are only visible in Settings and
       Sources, and in source exports, so treat exports as confidential.
+
+**Limiting `/api/v1` to your SIEMs.** After `setup-https`, add a block like
+this to `/etc/nginx/sites-available/pantomath`, inside the `listen 443`
+server and above `location /`, with your SIEM networks, then
+`sudo nginx -t && sudo systemctl reload nginx`:
+
+```nginx
+location /api/v1/ {
+    allow 10.20.0.0/24;      # the SIEM and firewall managers
+    deny  all;
+    proxy_pass http://127.0.0.1:7373;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+The SIEM has to trust the HTTPS certificate: a certificate from your internal
+CA is better than the self-signed one `setup-https` makes.
 
 What Pantomath protects by design: all data needs a sign-in; passwords,
 recovery codes, setup codes and webhook keys are stored as salted PBKDF2
 hashes (200,000 iterations); sign-in tokens only as SHA-256 fingerprints;
 the sign-in cookie is HttpOnly and SameSite=Strict; the Our stack list is
 only readable in Settings; making the server fetch an arbitrary address
-(testing feeds, the catalog address) needs the Settings password.
+(testing feeds, the catalog address) needs the Settings password. In the
+IOC database, adding, editing or marking indicators, IOC feeds and the
+allowlist all need the Settings password, because SIEMs and firewalls act on
+what's there; SIEM keys open `/api/v1` and nothing else; IOC feed keys are
+never returned by the API or written to the log.
 
 ## 13. Troubleshooting
 
@@ -410,6 +468,9 @@ only readable in Settings; making the server fetch an arbitrary address
 | **Not updating** in the header | The browser lost the server: check the service (`systemctl status pantomath`) and the network |
 | A source is **Failing** | The reason is on the Sources page; *Test* rechecks it |
 | Exploited items never appear | Settings, Exploited vulnerabilities shows the download status; without internet, set an internal catalog address |
+| The IOC database tab says the database can't be opened | The reason is shown on the tab and in the log (`journalctl -u pantomath`). Every other tab keeps working. Check that `/var/lib/pantomath/ioc.db` belongs to `pantomath`; if it is damaged, restore your copy or move it aside and restart (an empty one is created) |
+| An IOC feed is **Failing** | The reason is in Settings, IOC feeds; *Test feed* in its edit form rechecks it. HTTP 401 or 403 usually means the feed needs a key, or the key is wrong |
+| A SIEM gets 401 from `/api/v1` | It needs a SIEM key (Settings, Security), not an API key, sent as `Authorization: Bearer pms_…` |
 | Desktop notifications blocked | They need HTTPS (section 6) |
 | The service won't start after a manual database operation | Files in `/var/lib/pantomath` owned by root: `sudo chown -R pantomath:pantomath /var/lib/pantomath` |
 | `dpkg -i` left the package half-installed ("python3-venv" or another dependency missing) | Run `sudo apt install -f`, or reinstall with `sudo apt install ./pantomath_<version>_amd64.deb`, which installs the dependencies |

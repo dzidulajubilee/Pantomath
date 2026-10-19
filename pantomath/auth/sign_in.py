@@ -20,6 +20,12 @@ the wall screen shouldn't need signing in again after an upgrade.
 it a session ends after 12 idle hours or when the browser closes. API keys
 are the same kind of record, sent as `Authorization: Bearer ...`.
 
+SIEM keys (1.0.0) are API keys with the role "siem". They can call the IOC
+lookup API (/api/v1) and nothing else: `validate()` only returns a SIEM
+key's session when the caller asks for one (`siem=True`), so every other
+check (dashboard routes, the WebSocket, the sign-in status) rejects it
+without having to know SIEM keys exist.
+
 PANTOMATH_OPEN_DASHBOARD=1 turns sign-in off entirely (for installs behind
 an authenticating reverse proxy, and for the test suite).
 """
@@ -43,6 +49,8 @@ MAX_FAILURES = 5
 LOCKOUT_SECONDS = 60
 MIN_PASSWORD_LENGTH = 8
 API_KEY_PREFIX = "pmk_"
+SIEM_KEY_PREFIX = "pms_"
+SIEM_ROLE = "siem"
 
 _TEAM_HASH, _TEAM_SALT = "team_password_hash", "team_password_salt"
 _failures: dict[str, list[float]] = {}                 # ip -> [failures, locked_until]
@@ -157,7 +165,8 @@ def describe_user_agent(user_agent: str) -> str:
 
 async def create_session(db, role: str, remember: bool, ip: str, user_agent: str,
                          kind: str = "browser", label: str = "") -> tuple[str, str]:
-    token = (API_KEY_PREFIX if kind == "api" else "") + secrets.token_urlsafe(32)
+    prefix = (SIEM_KEY_PREFIX if role == SIEM_ROLE else API_KEY_PREFIX) if kind == "api" else ""
+    token = prefix + secrets.token_urlsafe(32)
     session_id = str(uuid.uuid4())
     now = time.time()
     expires = 0 if kind == "api" else now + (REMEMBER_SECONDS if remember else SESSION_SECONDS)
@@ -171,19 +180,22 @@ async def create_session(db, role: str, remember: bool, ip: str, user_agent: str
     return token, session_id
 
 
-async def validate(db, token: str | None) -> dict | None:
+async def validate(db, token: str | None, siem: bool = False) -> dict | None:
+    """The session for a cookie or key, or None. SIEM keys only count when `siem` is True, and only they do then."""
     if not token:
         return None
     digest = hash_token(token)
     now = time.time()
     cached = _cache.get(digest)
     if cached and cached[1] > now and (not cached[0]["expires_at"] or cached[0]["expires_at"] > now):
-        return cached[0]
+        return cached[0] if (cached[0]["role"] == SIEM_ROLE) == siem else None
     cur = await db.execute("SELECT * FROM sessions WHERE token_hash = ?", (digest,))
     row = await cur.fetchone()
     if not row:
         return None
     session = dict(row)
+    if (session["role"] == SIEM_ROLE) != siem:
+        return None
     if session["expires_at"] and session["expires_at"] < now:
         await db.execute("DELETE FROM sessions WHERE id = ?", (session["id"],))
         await db.commit()

@@ -4,7 +4,7 @@ A lightweight, self-hosted threat intelligence dashboard. Pantomath polls the
 RSS and Atom feeds you choose, scores each item's severity, pulls out CVEs,
 IP addresses, hashes and emails, tags vendors and threat actors, and shows it
 all in one browser dashboard that updates live. Everything stays on your
-server: one SQLite file, no cloud service, and it installs and runs without
+server: SQLite files on disk, no cloud service, and it installs and runs without
 internet access. Everyone signs in, with a team password to view and a
 separate Settings password to change things. **It ships with zero pre-loaded sources**, so a
 fresh install shows exactly what you configure.
@@ -53,6 +53,18 @@ fresh install shows exactly what you configure.
   appeared with, and when it was first and last seen. Select some or all,
   then copy them, export a CSV, or download a plain-text blocklist for your
   firewall or EDR. The activity calendar narrows everything to one day.
+- **IOC database.** A second tab for indicators published *as* indicators:
+  from IOC feeds (any plain-text or CSV list at a URL, a public one, a
+  vendor's or an internal mirror, tested before you save it) and from your
+  team (by hand, pasted or from a CSV). Each value is stored once with every
+  source that reports it, an explainable confidence, threat context and an
+  expiry, so stale infrastructure ages out. Mark false positives, keep an
+  allowlist of what must never be blocked, and look up to 1,000 values at
+  once. SIEMs, firewalls and scripts use the same data through a small
+  versioned lookup API (`/api/v1`: lookup, export with incremental `since`,
+  health) with their own **SIEM keys**, which can't reach anything else.
+  It lives in its own database file, so a large import never slows the
+  dashboard.
 - **Sources.** Health at a glance: healthy and failing counts, last
   successful poll, items today, response time, and *why* a feed is failing
   ("HTTP 404 Not Found", "URL returned a web page, not an RSS/Atom feed",
@@ -62,8 +74,8 @@ fresh install shows exactly what you configure.
   (weekday by hour), the most mentioned vendors and threat actors,
   categories and indicator counts, over 7, 30 or 90 days or 12 months.
 - **Settings** are split into sections (Collection, Our stack, Exploited
-  vulnerabilities, Alerts, Storage, Backup and restore, Appearance,
-  Security), one at a time.
+  vulnerabilities, IOC feeds, Allowlist, Alerts, Storage, Backup and restore,
+  Appearance, Security), one at a time.
 - **Search.** The search box in the header takes a CVE, IP address, hash or
   email straight to it; anything else filters the Live feed. Press `/` to
   jump to it.

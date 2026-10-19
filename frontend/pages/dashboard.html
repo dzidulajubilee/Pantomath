@@ -125,6 +125,7 @@
     <div class="nav-group">
       <div class="nav-group-label">Investigate</div>
       <button class="nav-item" data-view="iocs"><span class="glyph icon-iocs"></span><span class="nav-label">Indicators</span></button>
+      <button class="nav-item" data-view="ioc-database"><span class="glyph icon-ioc-database"></span><span class="nav-label">IOC database</span></button>
       <button class="nav-item" data-view="vulnerabilities"><span class="glyph icon-vulnerabilities"></span><span class="nav-label">Vulnerabilities</span></button>
       <button class="nav-item" data-view="malware"><span class="glyph icon-malware"></span><span class="nav-label">Malware</span></button>
       <button class="nav-item" data-view="ransomware"><span class="glyph icon-ransomware"></span><span class="nav-label">Ransomware</span></button>
@@ -496,6 +497,69 @@
       </div>
     </section>
 
+    <!-- IOC DATABASE (1.0.0) -->
+    <section class="view" id="view-ioc-database">
+      <div class="view-head">
+        <div><h2>IOC database</h2><div class="desc">Indicators from IOC feeds and your team, with sources, confidence and expiry. SIEMs query the same data through the lookup API.</div></div>
+        <div class="view-actions">
+          <button type="button" class="btn" id="iocdbFeedsBtn">IOC feeds</button>
+          <button type="button" class="btn btn-primary" id="iocdbAddBtn">+ Add indicators</button>
+        </div>
+      </div>
+      <div class="iocdb-error" id="iocdbError" role="alert" hidden></div>
+      <div class="kpi-strip kpi-strip-4" id="iocdbKpis" aria-label="Summary"></div>
+      <section class="card iocdb-lookup">
+        <div class="card-head"><div><h3>Look up values</h3><div class="card-sub">Up to 1,000 IP addresses, domains, URLs, hashes or emails, one per line. Defanged values such as <code>hxxp://evil[.]example</code> work.</div></div></div>
+        <div class="iocdb-lookup-body">
+          <label for="iocdbLookupInput" class="visually-hidden">Values to look up</label>
+          <textarea class="text-input" id="iocdbLookupInput" rows="3" spellcheck="false" placeholder="203.0.113.45&#10;login-secure-update.example&#10;44d88612fea8a8f36de82e1278abb02f"></textarea>
+          <div class="iocdb-lookup-actions">
+            <label class="iocdb-check"><input type="checkbox" id="iocdbLookupExpired"> Include expired indicators</label>
+            <span class="grow"></span>
+            <button type="button" class="btn" id="iocdbLookupClear" hidden>Clear</button>
+            <button type="button" class="btn btn-primary" id="iocdbLookupBtn">Look up</button>
+          </div>
+          <div class="iocdb-lookup-result" id="iocdbLookupResult" role="status"></div>
+        </div>
+      </section>
+      <div class="filter-bar">
+        <div class="filter-row">
+          <div class="seg" id="iocdbTypes" role="group" aria-label="Indicator type"></div>
+          <label for="iocdbSearch" class="visually-hidden">Filter indicators</label>
+          <input type="search" class="text-input grow" id="iocdbSearch" placeholder="Filter by value, malware, campaign, threat type or note">
+        </div>
+        <div class="filter-row">
+          <label for="iocdbConfidence" class="visually-hidden">Confidence</label>
+          <select id="iocdbConfidence">
+            <option value="0">Any confidence</option>
+            <option value="50">Confidence 50 or more</option>
+            <option value="70">Confidence 70 or more</option>
+            <option value="90">Confidence 90 or more</option>
+          </select>
+          <label for="iocdbMalware" class="visually-hidden">Malware</label>
+          <select id="iocdbMalware"><option value="">Any malware</option></select>
+          <label for="iocdbSource" class="visually-hidden">Source</label>
+          <select id="iocdbSource"><option value="">Any source</option></select>
+          <label for="iocdbStatus" class="visually-hidden">Status</label>
+          <select id="iocdbStatus">
+            <option value="active">Active</option>
+            <option value="expired">Expired</option>
+            <option value="false_positive">False positives</option>
+            <option value="allowlisted">Allowlisted</option>
+            <option value="all">Every status</option>
+          </select>
+          <span class="filter-hint" id="iocdbCount"></span>
+        </div>
+      </div>
+      <div class="live-layout">
+        <div class="live-list-wrap">
+          <div class="iocdb-table" id="iocdbTable" role="table" aria-label="Indicators"></div>
+          <div class="pagination" id="iocdbPagination"></div>
+        </div>
+        <aside class="detail-panel" id="iocdbDetail" aria-label="Indicator details" hidden></aside>
+      </div>
+    </section>
+
     <!-- SAVED -->
     <section class="view" id="view-saved">
       <div class="view-head">
@@ -603,6 +667,8 @@
           <button type="button" data-target="set-collection" class="active">Collection</button>
           <button type="button" data-target="set-stack">Our stack</button>
           <button type="button" data-target="set-kev">Exploited vulnerabilities</button>
+          <button type="button" data-target="set-ioc-feeds">IOC feeds</button>
+          <button type="button" data-target="set-ioc-allowlist">Allowlist</button>
           <button type="button" data-target="set-alerts">Alerts</button>
           <button type="button" data-target="set-storage">Storage</button>
           <button type="button" data-target="set-backup">Backup and restore</button>
@@ -676,6 +742,56 @@
               </div>
               <p class="set-result" id="kevUrlResult" role="status"></p>
             </div>
+          </div>
+
+          <div class="settings-card" id="set-ioc-feeds">
+            <div class="settings-card-head"><h3>IOC feeds</h3><p>Lists of indicators published at a URL, as plain text or CSV, that fill the <strong>IOC database</strong>. A public list, a vendor's feed or a file on an internal mirror all work the same way.</p></div>
+            <div class="set-row set-row-top">
+              <div class="set-text">
+                <span class="set-label">Feeds</span>
+                <p class="set-hint">Each feed is downloaded on its own timer, separately from your RSS sources. Pantomath asks the server whether the list changed and skips it if not.</p>
+              </div>
+              <div class="set-control"><button type="button" class="btn btn-primary" id="iocFeedAddBtn">+ Add IOC feed</button></div>
+            </div>
+            <div class="src-table iocfeed-table" id="iocFeedTable" role="table" aria-label="IOC feeds"></div>
+            <div class="set-row iocfeed-keep">
+              <div class="set-text">
+                <label class="set-label" for="iocKeepExpired">Keep expired indicators for</label>
+                <p class="set-hint">An indicator expires when no source has reported it for its lifetime. Expired indicators are never returned to SIEMs, but stay under the Expired filter for this long, then are deleted. Keeping them for ever keeps the history and lets the file grow (roughly 0.5 GB per million indicators). False-positive marks are always kept.</p>
+                <p class="set-result" id="iocKeepExpiredResult" role="status"></p>
+              </div>
+              <div class="set-control">
+                <select id="iocKeepExpired" class="control-select">
+                  <option value="30">30 days</option>
+                  <option value="90">90 days (default)</option>
+                  <option value="180">6 months</option>
+                  <option value="365">1 year</option>
+                  <option value="730">2 years</option>
+                  <option value="0">Forever</option>
+                </select>
+              </div>
+            </div>
+            <p class="set-hint iocfeed-note">Check each feed's terms before relying on it, especially for commercial use. Downloading a list tells its publisher nothing about your network.</p>
+          </div>
+
+          <div class="settings-card" id="set-ioc-allowlist">
+            <div class="settings-card-head"><h3>Allowlist</h3><p>Values the IOC database must never hold: your suppliers, your public address ranges, domains you must never block.</p></div>
+            <div class="set-block">
+              <div class="stack-form">
+                <div class="stack-field">
+                  <label for="allowValue">IP, range, domain or value</label>
+                  <input type="text" class="text-input" id="allowValue" maxlength="300" placeholder="e.g. 198.51.100.0/24 or example.com">
+                </div>
+                <div class="stack-field grow">
+                  <label for="allowReason">Why <span class="muted">(optional)</span></label>
+                  <input type="text" class="text-input" id="allowReason" maxlength="200" placeholder="e.g. Our office's public range">
+                </div>
+                <button type="button" class="btn btn-primary" id="allowAddBtn">Add</button>
+              </div>
+              <p class="set-hint">A domain also covers its subdomains, and URLs and email addresses on them. A range covers every IP address in it. Feeds' values that match are dropped on arrival; stored ones that match stop being returned to SIEMs straight away.</p>
+              <p class="set-result" id="allowResult" role="status"></p>
+            </div>
+            <div class="stack-list" id="allowList"></div>
           </div>
 
           <div class="settings-card" id="set-alerts">
@@ -752,7 +868,7 @@
           </div>
 
           <div class="settings-card" id="set-backup">
-            <div class="settings-card-head"><h3>Backup and restore</h3><p>Everything lives in one SQLite file.</p></div>
+            <div class="settings-card-head"><h3>Backup and restore</h3><p>The dashboard's data lives in one SQLite file. The IOC database is a separate file (<code>ioc.db</code>), not included here; back it up on the server.</p></div>
             <div class="set-row">
               <div class="set-text">
                 <span class="set-label">Back up the database</span>
@@ -829,6 +945,16 @@
               </div>
               <div class="api-key-new" id="apiKeyNew" hidden></div>
               <div class="device-list" id="apiKeyList"></div>
+            </div>
+            <div class="set-block">
+              <span class="set-label">SIEM keys</span>
+              <p class="set-hint">For SIEMs, firewalls and scripts that check values against the IOC database. A SIEM key can call the lookup API (<code>/api/v1</code>) and nothing else: it can't read the dashboard or change settings. It's shown only once.</p>
+              <div class="kev-url">
+                <input type="text" class="text-input" id="siemKeyLabel" maxlength="60" placeholder="Which SIEM, e.g. Wazuh manager">
+                <button type="button" class="btn" id="siemKeyCreateBtn">Create SIEM key</button>
+              </div>
+              <div class="api-key-new" id="siemKeyNew" hidden></div>
+              <div class="device-list" id="siemKeyList"></div>
             </div>
             <div class="set-row">
               <div class="set-text">
@@ -998,6 +1124,169 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="iocAddOverlay">
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="iocAddTitle">
+    <h3 id="iocAddTitle">Add indicators</h3>
+    <div class="field">
+      <label for="iocAddText">Values</label>
+      <textarea class="text-input iocdb-textarea" id="iocAddText" rows="7" spellcheck="false" placeholder="One per line: IP addresses, domains, URLs, hashes, email senders"></textarea>
+      <div class="feed-test-row">
+        <button type="button" class="btn btn-sm" id="iocAddFileBtn">Import a CSV or text file&hellip;</button>
+        <input type="file" id="iocAddFile" accept=".csv,.txt,text/csv,text/plain" style="display:none;">
+        <span class="hint" id="iocAddFileName">Defanged values are restored. Private addresses are refused.</span>
+      </div>
+    </div>
+    <div class="field" id="iocAddColumnField" hidden>
+      <label for="iocAddColumn">Column holding the value</label>
+      <input type="text" id="iocAddColumn" placeholder="Header name or column number; empty picks it automatically">
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label for="iocAddType">Indicator type</label>
+        <select id="iocAddType"></select>
+      </div>
+      <div class="field">
+        <label for="iocAddConfidence">Confidence (0–100)</label>
+        <input type="number" id="iocAddConfidence" min="0" max="100" value="70">
+      </div>
+      <div class="field">
+        <label for="iocAddThreat">Threat type <span class="muted">(optional)</span></label>
+        <input type="text" id="iocAddThreat" list="iocThreatTypes" maxlength="40" placeholder="e.g. c2, phishing">
+      </div>
+      <div class="field">
+        <label for="iocAddLifetime">Lifetime</label>
+        <select id="iocAddLifetime"></select>
+      </div>
+      <div class="field">
+        <label for="iocAddMalware">Malware <span class="muted">(optional)</span></label>
+        <input type="text" id="iocAddMalware" maxlength="100" placeholder="e.g. QakBot">
+      </div>
+      <div class="field">
+        <label for="iocAddCampaign">Campaign <span class="muted">(optional)</span></label>
+        <input type="text" id="iocAddCampaign" maxlength="100">
+      </div>
+    </div>
+    <div class="field">
+      <label for="iocAddReference">Reference <span class="muted">(optional)</span></label>
+      <input type="text" id="iocAddReference" maxlength="500" placeholder="A report URL or ticket number">
+    </div>
+    <div class="field">
+      <label for="iocAddNote">Note <span class="muted">(optional)</span></label>
+      <input type="text" id="iocAddNote" maxlength="2000">
+    </div>
+    <div class="feed-test" id="iocAddResult" role="status" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="iocAddCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="iocAddSubmit">Add indicators</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="iocFeedOverlay">
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="iocFeedTitle">
+    <h3 id="iocFeedTitle">Add IOC feed</h3>
+    <div class="field">
+      <label for="iocFeedName">Name</label>
+      <input type="text" id="iocFeedName" maxlength="80" placeholder="e.g. Feodo Tracker C2 IPs">
+    </div>
+    <div class="field">
+      <label for="iocFeedUrl">List URL</label>
+      <input type="text" id="iocFeedUrl" placeholder="https://feodotracker.abuse.ch/downloads/ipblocklist.txt">
+      <div class="hint">http or https. An internal mirror works the same way.</div>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label for="iocFeedFormat">Format</label>
+        <select id="iocFeedFormat">
+          <option value="text">Plain text, one per line</option>
+          <option value="csv">CSV</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="iocFeedType">Indicator type</label>
+        <select id="iocFeedType"></select>
+      </div>
+    </div>
+    <div class="field-grid" id="iocFeedCsvFields" hidden>
+      <div class="field">
+        <label for="iocFeedValueCol">Value column</label>
+        <input type="text" id="iocFeedValueCol" list="iocFeedColumns" placeholder="Picked by the test">
+      </div>
+      <div class="field">
+        <label for="iocFeedMalwareCol">Malware column <span class="muted">(optional)</span></label>
+        <input type="text" id="iocFeedMalwareCol" list="iocFeedColumns">
+      </div>
+      <div class="field">
+        <label for="iocFeedDateCol">Date column <span class="muted">(optional)</span></label>
+        <input type="text" id="iocFeedDateCol" list="iocFeedColumns">
+      </div>
+      <datalist id="iocFeedColumns"></datalist>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label for="iocFeedConfidence">Confidence (0–100)</label>
+        <input type="number" id="iocFeedConfidence" min="0" max="100" value="75">
+      </div>
+      <div class="field">
+        <label for="iocFeedThreat">Threat type <span class="muted">(optional)</span></label>
+        <input type="text" id="iocFeedThreat" list="iocThreatTypes" maxlength="40" placeholder="e.g. c2">
+      </div>
+      <div class="field">
+        <label for="iocFeedInterval">Fetch every</label>
+        <select id="iocFeedInterval">
+          <option value="900">15 minutes</option>
+          <option value="1800">30 minutes</option>
+          <option value="3600">1 hour</option>
+          <option value="10800">3 hours</option>
+          <option value="21600" selected>6 hours</option>
+          <option value="43200">12 hours</option>
+          <option value="86400">24 hours</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="iocFeedLifetime">Lifetime</label>
+        <select id="iocFeedLifetime"></select>
+      </div>
+    </div>
+    <div class="field">
+      <label class="check-label"><input type="checkbox" id="iocFeedSnapshot"> This list is a snapshot: a value that drops off it stops counting at the next download</label>
+      <div class="hint">For lists of the current bad set, such as a C2 blocklist. If another feed still reports the value, it stays active on that evidence. Leave it off for lists that only add.</div>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label for="iocFeedKeyHeader">Key header <span class="muted">(optional)</span></label>
+        <input type="text" id="iocFeedKeyHeader" maxlength="64" placeholder="e.g. Auth-Key" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="iocFeedKey">Key</label>
+        <input type="password" id="iocFeedKey" autocomplete="new-password">
+        <div class="hint" id="iocFeedKeyHint">Stored, never shown again.</div>
+      </div>
+    </div>
+    <div class="field" id="iocFeedClearKeyField" hidden>
+      <label class="check-label"><input type="checkbox" id="iocFeedClearKey"> Remove the stored key</label>
+    </div>
+    <div class="field">
+      <label for="iocFeedMaxMb">Size limit (MB)</label>
+      <input type="number" id="iocFeedMaxMb" min="1" max="500" value="30">
+    </div>
+    <div class="feed-test-row">
+      <button type="button" class="btn btn-sm" id="iocFeedTestBtn">Test feed</button>
+      <span class="hint">Downloads the list and reads it without saving anything.</span>
+    </div>
+    <div class="feed-test" id="iocFeedTestResult" role="status" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="iocFeedCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="iocFeedSave">Add feed</button>
+    </div>
+  </div>
+</div>
+
+<datalist id="iocThreatTypes">
+  <option value="c2"><option value="botnet"><option value="phishing"><option value="malware_download">
+  <option value="payload"><option value="scanner"><option value="brute_force"><option value="spam"><option value="exploit">
+</datalist>
+
 <script src="/static/components/icon.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/theme.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/notifications.js?v={{CACHEBUST}}"></script>
@@ -1006,5 +1295,6 @@
 <script src="/static/widgets/pagination.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/feed-list.js?v={{CACHEBUST}}"></script>
 <script src="/static/widgets/app.js?v={{CACHEBUST}}"></script>
+<script src="/static/widgets/ioc-database.js?v={{CACHEBUST}}"></script>
 </body>
 </html>

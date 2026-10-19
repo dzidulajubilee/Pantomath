@@ -9,6 +9,8 @@ from pantomath import __version__
 from pantomath.api.routes import auth_router, broadcast, make_poll_now_route, protected_router, router
 from pantomath.database.sqlite import init_db
 from pantomath.feeds.scheduler import Scheduler
+from pantomath.ioc.db import init_ioc_db
+from pantomath.ioc.routes import ioc_protected_router, ioc_router, ioc_scheduler, siem_router
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
@@ -31,8 +33,16 @@ async def lifespan(app: FastAPI):
     finally:
         await db.close()
     await scheduler.start()
+    # The IOC database (1.0.0) is its own file: if it can't be set up, its
+    # tab and /api/v1 report why and every other part of Pantomath runs.
+    try:
+        await init_ioc_db()
+    except Exception as e:
+        print(f"[pantomath] The IOC database is unavailable: {e}")
+    await ioc_scheduler.start()
     yield
     scheduler.stop()
+    ioc_scheduler.stop()
 
 
 app = FastAPI(title="Pantomath", lifespan=lifespan)
@@ -41,6 +51,9 @@ app.include_router(auth_router)
 app.include_router(router)
 app.include_router(protected_router)
 make_poll_now_route(scheduler)  # registers /api/sources/{id}/poll(-all) on protected_router
+app.include_router(ioc_router)
+app.include_router(ioc_protected_router)
+app.include_router(siem_router)
 
 
 @app.get("/")

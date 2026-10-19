@@ -27,6 +27,13 @@ Pantomath/
 │   │   └── sqlite.py      # connection helper + startup init/seed logic
 │   ├── api/
 │   │   └── routes.py      # REST endpoints + the /ws WebSocket
+│   ├── ioc/               # the IOC database (1.0.0), its own ioc.db file
+│   │   ├── normalize.py   # what a value is, and its one canonical spelling
+│   │   ├── models.py, db.py  # ioc.db schema and get_ioc_db()
+│   │   ├── store.py       # duplicates, sightings, confidence, expiry, allowlist
+│   │   ├── feeds.py       # IOC feeds: bounded, conditional download; text/CSV parsing
+│   │   ├── scheduler.py   # the IOC feeds' own timer
+│   │   └── routes.py      # the IOC tab's /api/ioc routes and the /api/v1 lookup API
 │   └── app.py              # FastAPI app, mounts frontend/, wires it together
 │
 ├── frontend/
@@ -35,6 +42,7 @@ Pantomath/
 │   ├── widgets/
 │   │   ├── app.js             # router, view loaders, sources/settings, WebSocket
 │   │   ├── feed-list.js       # reusable item-card renderer (save/open/tags)
+│   │   ├── ioc-database.js    # the IOC database tab, IOC feeds, allowlist, SIEM keys
 │   │   └── charts.js          # dependency-free bar chart + sparkline
 │   ├── components/icon.js     # favicon-with-fallback helper
 │   └── assets/icons/          # app logo (also used as favicon)
@@ -252,6 +260,62 @@ shape (triangle high, diamond medium, ring low), never colour alone.
   back in is the setup code. Commands that touch the database continue as the
   owner of the database folder when run as root: the database is in WAL
   mode, and a root-owned `-wal`/`-shm` file would stop the service writing.
+
+## IOC database and lookup API (1.0.0)
+
+A second pipeline in the same service, next to the news one rather than
+inside it. The news side (RSS sources, items, the Indicators tab,
+`/api/iocs`, the existing backup and API keys) doesn't change.
+
+- **Its own file.** `ioc.db` next to `pantomath.db`, opened with
+  `ioc/db.get_ioc_db()` (same driver and pragmas). SQLite allows one writer
+  per file, so a 200,000-line feed import only holds `ioc.db`'s lock and RSS
+  polling, sign-ins and settings saves never wait on it. If it can't be opened,
+  `init_ioc_db()` failing at startup is logged, and every IOC route returns 503
+  with the reason through `ioc_db()`; the rest of Pantomath runs as before.
+  The existing backup stays small: most of `ioc.db` can be downloaded again.
+- **One row per value.** `indicators` has `UNIQUE (type, value)`, and
+  `sightings` (one per source reporting it) `UNIQUE (indicator_id, source)`,
+  so a duplicate can't be written even by a buggy reader. Every value goes
+  through `normalize.py` first (refanging, lowercase, punycode, `ipaddress`
+  canonical form; non-public addresses refused). JA3 and certificate
+  fingerprints look like MD5/SHA hashes, so they're never auto-detected; a
+  lookup tries every type a value could be (`candidates`).
+- **Arrivals are evidence** (`store.ingest`): a new value creates an indicator
+  and its first sighting; a stored value from a new source adds a sighting
+  (confidence: highest source + 10 per further source, capped at 100; an
+  analyst's number wins); a value the same source reported within a day costs
+  one indexed read and no write, so re-downloading a whole list changes
+  almost nothing on disk. Feeds only fill empty context fields, and never
+  touch a false-positive mark or an allowlisted value. Batches of 2,000 with a
+  commit after each.
+- **Expiry** is counted from the last report (per-type defaults in
+  `normalize.DEFAULT_LIFETIME_DAYS`, overridable per feed); the IOC scheduler
+  expires due indicators hourly and deletes them 90 days later (the
+  `keep_expired_days` value in `ioc.db`'s `ioc_settings`; 0 keeps them). A
+  **snapshot** feed's complete download ends its sightings for values no
+  longer listed (`end_snapshot`); an indicator nobody else reports expires at
+  once. An empty download from a list that had values is treated as an error,
+  not as "everything dropped off".
+- **IOC feeds** reuse the KEV download's approach rather than a connector:
+  urllib with a per-read timeout, an overall deadline and a size cap, plus
+  ETag / Last-Modified so an unchanged list is skipped, parsing in the
+  executor. `IocScheduler` is its own asyncio task, so a slow list can't delay
+  RSS polling. Keys are stored in `ioc_feeds.key_value` and never returned or
+  logged.
+- **Three gates** (`ioc/routes.py`): browsing and looking up need sign-in
+  (`require_viewer`); changing anything needs the Settings password
+  (`require_settings_auth`), since SIEMs and firewalls act on it; `/api/v1`
+  needs a **SIEM key**: a `sessions` row with role `siem`. `sign_in.validate()`
+  only returns a SIEM session when called with `siem=True`, so every
+  existing check (dashboard routes, the WebSocket, sign-in status) rejects
+  SIEM keys without knowing they exist, and `require_siem_key` accepts
+  nothing else. Ordinary API keys keep exactly their old access.
+- **`/api/v1` is a contract**: ISO times, a miss is `200` with
+  `"match": false`, batch lookups are one `IN (...)` query on the indexed
+  value, and `export?since=` streams every row whose `updated_at` changed
+  (whatever its status, so syncs can remove what stopped matching).
+  Lookups never write to `ioc.db`.
 
 ## Extensibility: the connector contract
 

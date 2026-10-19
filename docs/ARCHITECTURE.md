@@ -261,7 +261,7 @@ shape (triangle high, diamond medium, ring low), never colour alone.
   owner of the database folder when run as root: the database is in WAL
   mode, and a root-owned `-wal`/`-shm` file would stop the service writing.
 
-## IOC database and lookup API (1.0.0)
+## IOC database and lookup API (1.0.0, 1.1.0)
 
 A second pipeline in the same service, next to the news one rather than
 inside it. The news side (RSS sources, items, the Indicators tab,
@@ -311,6 +311,26 @@ inside it. The news side (RSS sources, items, the Indicators tab,
   existing check (dashboard routes, the WebSocket, sign-in status) rejects
   SIEM keys without knowing they exist, and `require_siem_key` accepts
   nothing else. Ordinary API keys keep exactly their old access.
+- **Built-in readers** (`ioc/readers.py`, 1.1.0): ThreatFox, URLhaus,
+  MalwareBazaar, Feodo Tracker, SSLBL and the AbuseIPDB blacklist, each one
+  function from the publisher's export to `Arrival`s, picked as a feed's
+  `format`. Arrivals can carry their own confidence, threat type, reference
+  and tags (ThreatFox's `confidence_level`, AbuseIPDB's score), used before
+  the feed's settings. List parsing lives in `ioc/parsing.py` so readers and
+  feeds share it without importing each other.
+- **Promoting** from the news side is the same manual-entry route with
+  `promoted: true`: its own source (`promoted`), treated like an analyst's
+  entry (it may overwrite context fields and sets the confidence).
+- **"In the news"** (`/api/ioc/indicators/{id}/mentions`) is the only read
+  of `pantomath.db` from the IOC side: the extracted-value columns for IPs,
+  hashes and emails, a LIKE on titles and summaries for the rest.
+- **SIEM hit counts** (`ioc/hits.py`): `/api/v1` lookups that match are added
+  up in memory and written by the IOC scheduler every 30 seconds into
+  `indicator_hits` (per indicator and day, kept 90 days) and `lookup_stats`
+  (per day, kept 400), and once more on shutdown, so lookups never write.
+  Counts not yet written are added in when the tab asks.
+- **IOC backup** (`/api/ioc/backup`): `VACUUM INTO` on its own plain
+  connection in the executor, then streamed and deleted.
 - **`/api/v1` is a contract**: ISO times, a miss is `200` with
   `"match": false`, batch lookups are one `IN (...)` query on the indexed
   value, and `export?since=` streams every row whose `updated_at` changed

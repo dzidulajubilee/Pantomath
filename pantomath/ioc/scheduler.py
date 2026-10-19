@@ -1,14 +1,16 @@
 """
 The IOC feeds' own timer, a separate task from the RSS scheduler, so a
 slow or failing list download never delays RSS polling (and the other way
-round). Downloads one due feed at a time, and once an hour expires
-indicators that no source has reported for their lifetime.
+round). Downloads one due feed at a time, writes the SIEM hit counts
+every 30 seconds, and once an hour expires indicators that no source
+has reported for their lifetime.
 """
 import asyncio
 import time
 
 from pantomath.ioc.db import IocUnavailable, get_ioc_db
 from pantomath.ioc.feeds import run_feed
+from pantomath.ioc.hits import hit_counter
 from pantomath.ioc.store import expire_due
 
 EXPIRY_CHECK_INTERVAL = 3600
@@ -32,13 +34,30 @@ class IocScheduler:
     async def _loop(self):
         while self._running:
             try:
+                await self.flush_hits()
                 await self.run_due()
+                await self.flush_hits()
                 await self._maybe_expire()
             except IocUnavailable as e:
                 print(f"[ioc] {e}")
             except Exception as e:
                 print(f"[ioc] scheduler error: {e}")
             await asyncio.sleep(self.check_interval)
+
+    async def flush_hits(self) -> None:
+        db = await get_ioc_db()
+        try:
+            await hit_counter.flush(db)
+        finally:
+            await db.close()
+
+    async def shutdown(self) -> None:
+        """Stops the loop and writes the hit counts still in memory."""
+        self.stop()
+        try:
+            await self.flush_hits()
+        except Exception as e:
+            print(f"[ioc] could not write SIEM hit counts on shutdown: {e}")
 
     async def run_due(self) -> None:
         db = await get_ioc_db()

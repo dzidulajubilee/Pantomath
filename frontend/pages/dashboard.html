@@ -468,6 +468,7 @@
         <span class="grow"></span>
         <button type="button" class="btn" id="iocCopyBtn">Copy all</button>
         <button type="button" class="btn" id="iocCsvBtn">Export CSV</button>
+        <button type="button" class="btn" id="iocPromoteBtn" hidden>Promote to IOC database</button>
         <button type="button" class="btn btn-primary" id="iocListBtn">Download list (.txt)</button>
       </div>
       <div class="ioc-layout">
@@ -507,7 +508,7 @@
         </div>
       </div>
       <div class="iocdb-error" id="iocdbError" role="alert" hidden></div>
-      <div class="kpi-strip kpi-strip-4" id="iocdbKpis" aria-label="Summary"></div>
+      <div class="kpi-strip" id="iocdbKpis" aria-label="Summary"></div>
       <section class="card iocdb-lookup">
         <div class="card-head"><div><h3>Look up values</h3><div class="card-sub">Up to 1,000 IP addresses, domains, URLs, hashes or emails, one per line. Defanged values such as <code>hxxp://evil[.]example</code> work.</div></div></div>
         <div class="iocdb-lookup-body">
@@ -547,6 +548,13 @@
             <option value="false_positive">False positives</option>
             <option value="allowlisted">Allowlisted</option>
             <option value="all">Every status</option>
+          </select>
+          <label for="iocdbSeen" class="visually-hidden">Looked up by SIEMs</label>
+          <select id="iocdbSeen">
+            <option value="0">Looked up or not</option>
+            <option value="1">Looked up by our SIEMs today</option>
+            <option value="7">Looked up by our SIEMs, last 7 days</option>
+            <option value="30">Looked up by our SIEMs, last 30 days</option>
           </select>
           <span class="filter-hint" id="iocdbCount"></span>
         </div>
@@ -868,13 +876,20 @@
           </div>
 
           <div class="settings-card" id="set-backup">
-            <div class="settings-card-head"><h3>Backup and restore</h3><p>The dashboard's data lives in one SQLite file. The IOC database is a separate file (<code>ioc.db</code>), not included here; back it up on the server.</p></div>
+            <div class="settings-card-head"><h3>Backup and restore</h3><p>The dashboard's data lives in one SQLite file. The IOC database is a separate file (<code>ioc.db</code>) with its own download below.</p></div>
             <div class="set-row">
               <div class="set-text">
                 <span class="set-label">Back up the database</span>
                 <p class="set-hint">Downloads the SQLite file (<code>/var/lib/pantomath/pantomath.db</code>) with every item, source, setting and webhook.</p>
               </div>
               <div class="set-control"><button class="btn" id="backupBtn">Download backup</button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-text">
+                <span class="set-label">Back up the IOC database</span>
+                <p class="set-hint">Downloads a copy of <code>ioc.db</code>: indicators, sources, false-positive marks, the allowlist, and the IOC feeds with their keys, so store it as carefully as the main backup. To restore it, see the administration guide.</p>
+              </div>
+              <div class="set-control"><button class="btn" id="iocBackupBtn">Download IOC backup</button></div>
             </div>
             <div class="set-row">
               <div class="set-text">
@@ -1127,6 +1142,7 @@
 <div class="modal-overlay" id="iocAddOverlay">
   <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="iocAddTitle">
     <h3 id="iocAddTitle">Add indicators</h3>
+    <p class="feed-test promote-note" id="iocAddPromoteNote" hidden>Values found in article text can be researchers' examples, hashes of clean files or press contacts. Check each one before promoting it: SIEMs and firewalls will act on it.</p>
     <div class="field">
       <label for="iocAddText">Values</label>
       <textarea class="text-input iocdb-textarea" id="iocAddText" rows="7" spellcheck="false" placeholder="One per line: IP addresses, domains, URLs, hashes, email senders"></textarea>
@@ -1198,15 +1214,19 @@
       <div class="field">
         <label for="iocFeedFormat">Format</label>
         <select id="iocFeedFormat">
-          <option value="text">Plain text, one per line</option>
-          <option value="csv">CSV</option>
+          <optgroup label="Any list">
+            <option value="text">Plain text, one per line</option>
+            <option value="csv">CSV</option>
+          </optgroup>
+          <optgroup label="Built-in readers" id="iocFeedReaders"></optgroup>
         </select>
       </div>
-      <div class="field">
+      <div class="field" id="iocFeedTypeField">
         <label for="iocFeedType">Indicator type</label>
         <select id="iocFeedType"></select>
       </div>
     </div>
+    <div class="feed-test reader-note" id="iocFeedReaderNote" hidden></div>
     <div class="field-grid" id="iocFeedCsvFields" hidden>
       <div class="field">
         <label for="iocFeedValueCol">Value column</label>
@@ -1224,7 +1244,7 @@
     </div>
     <div class="field-grid">
       <div class="field">
-        <label for="iocFeedConfidence">Confidence (0–100)</label>
+        <label for="iocFeedConfidence" id="iocFeedConfidenceLabel">Confidence (0–100)</label>
         <input type="number" id="iocFeedConfidence" min="0" max="100" value="75">
       </div>
       <div class="field">

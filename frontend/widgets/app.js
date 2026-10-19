@@ -1930,10 +1930,14 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
       <a class="btn btn-primary" href="${safeHref(i.link)}" target="_blank" rel="noopener">Open original &#8599;</a>
       <button type="button" class="btn" data-role="save">${i.bookmarked ? '&#9733; Saved' : '&#9734; Save'}</button>
       <button type="button" class="btn" data-role="read-toggle" data-id="${escapeAttr(i.id)}">Mark as unread</button>
+      ${i.ips.length + i.hashes.length + i.emails.length ? '<button type="button" class="btn" data-role="promote" title="Add this item\'s IP addresses, hashes and emails to the IOC database">Promote indicators</button>' : ''}
     </div>`;
   el.querySelector('[data-role="close"]').onclick = () => closeFeedDetail(panel);
   el.querySelector('[data-role="save"]').onclick = () => toggleFeedBookmark(panel, i);
   el.querySelector('[data-role="read-toggle"]').onclick = () => setItemRead(i, isUnread(i));
+  el.querySelector('[data-role="promote"]')?.addEventListener('click', () => openIocAdd({
+    values: [...i.ips, ...i.hashes, ...i.emails], reference: i.link || '', note: i.title, promoted: true,
+  }));
   el.querySelector('.detail-actions a').addEventListener('click', () => setItemRead(i, true));
   if (!force) setItemRead(i, true);  // opening an item is reading it (a re-render isn't)
   const copyAll = el.querySelector('[data-role="copy-all"]');
@@ -2309,6 +2313,9 @@ function updateIocActionBar() {
   document.getElementById('iocCopyBtn').textContent = n ? 'Copy selected' : 'Copy all';
   document.getElementById('iocCsvBtn').textContent = n ? 'Export selected (CSV)' : 'Export CSV';
   document.getElementById('iocListBtn').textContent = currentIocType === 'cve' ? 'Download list (.txt)' : 'Download blocklist (.txt)';
+  // CVEs aren't indicators of compromise; the rest can be promoted (widgets/ioc-database.js).
+  document.getElementById('iocPromoteBtn').hidden = currentIocType === 'cve';
+  document.getElementById('iocPromoteBtn').textContent = n ? 'Promote selected to IOC database' : 'Promote to IOC database';
 }
 
 async function iocRowsForExport() {

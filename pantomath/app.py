@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     await ioc_scheduler.start()
     yield
     scheduler.stop()
-    ioc_scheduler.stop()
+    await ioc_scheduler.shutdown()
 
 
 app = FastAPI(title="Pantomath", lifespan=lifespan)

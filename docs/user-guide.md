@@ -302,11 +302,12 @@ API ([api.md](api.md#10-lookup-api-for-siems-apiv1)).
 It is a different thing from **Indicators** (section 9): those are values
 found by pattern matching in article text, which also picks up researchers'
 example addresses and hashes of clean files. Nothing moves from one to the
-other automatically.
+other automatically: a person **promotes** values (below).
 
 **The summary** shows how many indicators are active, how many were added
-today, how many expire within 7 days unless a source reports them again, and
-how many IOC feeds are updating (a failing one is named).
+today, how many expire within 7 days unless a source reports them again, how
+many IOC feeds are updating (a failing one is named), and how many values
+your SIEMs looked up today, with how many matched.
 
 **Look up values.** Paste up to 1,000 IP addresses, domains, URLs, hashes or
 email addresses, one per line, and press **Look up** (or Ctrl+Enter).
@@ -320,8 +321,11 @@ its details.
 **The table**, most recently reported first, 50 per page. The type buttons
 (All, IP, Domain, URL, Hash, Email, JA3 / JA4 / cert) show how many active
 indicators there are of each; the filters narrow by text, confidence,
-malware, source and status (Active by default; Expired, False positives,
-Allowlisted or every status).
+malware, source (a feed, *Added by hand* or *Promoted from the news*),
+status (Active by default; Expired, False positives, Allowlisted or every
+status), and whether your SIEMs looked it up today, in the last 7 or the last
+30 days. A red **N×** before a value is how many times your SIEMs looked it
+up in the last 7 days: an indicator your network actually touched.
 
 | Column | Meaning |
 |---|---|
@@ -332,8 +336,13 @@ Allowlisted or every status).
 **Details.** Click a row for its confidence and where the number comes from
 ("85: highest source 75 (ThreatFox) + 10 × 1 more source"), its threat type,
 malware and campaign, first and last report, when it expires, and every
-source with its own confidence, reference and anything it said (such as a
-port). A source that no longer lists it is shown faded.
+source with its own confidence, reference and anything it said (a port,
+whether a URL is still online, the file type). A source that no longer lists
+it is shown faded. For a file hash from MalwareBazaar, *Same file* names the
+sample's other two hashes; click one to look it up. **Looked up by SIEMs**
+says how often your SIEMs asked about it today, in 7 and in 90 days, and when
+last. **In the news** says how many stored articles mention it, with the
+newest ones; *Show all* opens them on the Indicators tab.
 
 **Changing indicators** needs the Settings password, because SIEMs and
 firewalls act on what's here:
@@ -345,6 +354,15 @@ firewalls act on what's here:
   feed can bring it back. **Not a false positive** undoes it.
 - **Delete**: removes it. A feed that still lists it adds it again, so to keep
   a value out for good, mark it as a false positive instead.
+
+**Promoting from the news.** On the **Indicators** tab, tick IP addresses,
+hashes or emails (or open one) and press **Promote to IOC database**; in any
+article's detail panel, **Promote indicators** takes that article's IP
+addresses, hashes and emails, with the article as the reference. Both open
+the same form as *Add indicators*, with a warning to check each value
+first and a confidence of 50, and the values get their own source,
+*Promoted from the news*. CVEs aren't indicators of compromise, so they
+can't be promoted.
 
 **+ Add indicators**: paste values one per line, or **Import a CSV or text
 file** (for a CSV, name the column holding the values, or leave it empty and
@@ -476,6 +494,23 @@ internet access; leave it empty for CISA's official feed.
 **IOC feeds**: lists of indicators published at a URL that fill the IOC
 database. **+ Add IOC feed** asks for:
 
+- *Format*: one of the **built-in readers**, which fill in everything else,
+  or any plain text or CSV list (below). The built-in readers:
+
+  | Reader | Gives you | Key |
+  |---|---|---|
+  | ThreatFox (abuse.ch) | IPs with ports, domains, URLs and hashes from the last 48 hours, with malware family, threat type and ThreatFox's own confidence for each | abuse.ch's free Auth-Key, if they ask for it |
+  | URLhaus (abuse.ch) | Malware download URLs from the last 30 days, with tags and whether each is still online | as above |
+  | MalwareBazaar (abuse.ch) | SHA-256, MD5 and SHA-1 of recent malware samples, each its own indicator, with the malware family | as above |
+  | Feodo Tracker (abuse.ch) | The current botnet C2 blocklist, with ports (a snapshot list) | not needed today |
+  | SSLBL (abuse.ch) | SHA-1 fingerprints of certificates used by malware C2 (a snapshot list) | not needed today |
+  | AbuseIPDB blacklist | IPs reported for abuse, with AbuseIPDB's confidence score for each (a snapshot list) | a free AbuseIPDB key, required; fetched at most every 5 hours (the free plan allows 5 downloads a day) |
+
+  Picking one fills in its name, address, key header, interval, threat type
+  and whether it's a snapshot; you can still change them, for example to
+  point at an internal mirror. ThreatFox and AbuseIPDB give each value its
+  own confidence; the feed's confidence is only used when a value has none.
+
 - *Name* and *List URL* (http or https; an internal mirror works the same way).
 - *Format*: plain text, one value per line (blank lines and lines starting
   with `#` are skipped; only the first word of a line is read), or CSV. For a
@@ -533,8 +568,11 @@ brings them back.
 
 - *Download backup*: the whole database (items, sources, settings, webhooks,
   sign-ins) as one SQLite file.
-  The IOC database is a separate file (`ioc.db`) and isn't in this backup;
-  see the [administration guide](administration.md#9-data-backups-and-retention).
+  The IOC database is a separate file (`ioc.db`) and isn't in this backup.
+- *Download IOC backup*: a copy of the IOC database (indicators, their
+  sources, false-positive marks, the allowlist, and the IOC feeds with their
+  keys). Restoring it is done on the server; see the
+  [administration guide](administration.md#9-data-backups-and-retention).
 - *Restore from file*: replaces **everything** with a backup. A safety copy
   of the current database is kept on the server first.
 - *Export sources*: the source list as JSON.

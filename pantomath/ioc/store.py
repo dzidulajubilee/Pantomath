@@ -38,6 +38,8 @@ REFRESH_EVERY = DAY            # at most one write per indicator and source a da
 KEEP_EXPIRED_DAYS = 90         # default: expired indicators are deleted this long after they expire
 KEEP_EXPIRED_CHOICES = (30, 90, 180, 365, 730, 0)   # 0 = keep them for ever
 MANUAL = "manual"
+PROMOTED = "promoted"          # values an analyst promoted from the news side
+ANALYST_SOURCES = (MANUAL, PROMOTED)
 
 
 @dataclass
@@ -60,6 +62,12 @@ class Arrival:
     value: str
     context: dict = field(default_factory=dict)
     malware: str = ""           # per value, e.g. from a CSV column
+    # Per value, from feeds that give them (ThreatFox, AbuseIPDB...); the
+    # source's own setting applies when they're empty.
+    confidence: int | None = None
+    threat_type: str = ""
+    reference: str = ""
+    tags: str = ""
 
 
 @dataclass
@@ -173,7 +181,7 @@ async def ingest(db, source: Source, arrivals, now: float | None = None,
 
 
 async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, result):
-    manual = source.id == MANUAL
+    manual = source.id in ANALYST_SOURCES
     kept = []
     for a in batch:
         if allow and allow.covers(a.type, a.value):
@@ -185,7 +193,7 @@ async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, resul
 
     placeholders = ",".join("?" * len(kept))
     cur = await db.execute(
-        f"SELECT id, type, value, status, expires_at, malware, threat_type, campaign FROM indicators WHERE value IN ({placeholders})",
+        f"SELECT id, type, value, status, expires_at, malware, threat_type, campaign, tags FROM indicators WHERE value IN ({placeholders})",
         [a.value for a in kept],
     )
     existing = {(r["type"], r["value"]): dict(r) for r in await cur.fetchall()}
@@ -228,9 +236,12 @@ async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, resul
                 threat_type, malware, campaign, status, note, updated_at)
                VALUES (?,?,?,?,?,?,?,?,?,?, 'active', ?, ?)""",
             [(a.type, a.value, now, now, expiry_for(a.type, source.lifetime_days, now),
-              confidence_for([source.confidence], analyst_confidence), analyst_confidence,
-              source.threat_type, malware, source.campaign, source.note, now) for a, malware in new_rows],
+              confidence_for([_confidence(a, source)], analyst_confidence), analyst_confidence,
+              a.threat_type or source.threat_type, malware, source.campaign, source.note, now) for a, malware in new_rows],
         )
+        if any(a.tags for a, _ in new_rows):
+            await db.executemany("UPDATE indicators SET tags = ? WHERE type = ? AND value = ? AND tags = ''",
+                                 [(a.tags, a.type, a.value) for a, _ in new_rows if a.tags])
         values = [a.value for a, _ in new_rows]
         cur = await db.execute(f"SELECT id, type, value FROM indicators WHERE value IN ({','.join('?' * len(values))})", values)
         ids = {(r["type"], r["value"]): r["id"] for r in await cur.fetchall()}
@@ -251,7 +262,7 @@ async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, resul
                    source_name = excluded.source_name,
                    reference = CASE WHEN excluded.reference != '' THEN excluded.reference ELSE sightings.reference END,
                    context = CASE WHEN excluded.context != '' THEN excluded.context ELSE sightings.context END""",
-            [(indicator_id, source.id, source.name, source.reference, source.confidence, now, now,
+            [(indicator_id, source.id, source.name, a.reference or source.reference, _confidence(a, source), now, now,
               json.dumps(a.context, separators=(",", ":")) if a.context else "") for indicator_id, a in sighting_writes],
         )
 
@@ -263,11 +274,11 @@ async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, resul
             def pick(current, offered):
                 # Analysts overwrite what they type; feeds only fill blanks.
                 return (offered or current) if manual else (current or offered)
-            updates.append((now, expires, pick(row["malware"], malware), pick(row["threat_type"], source.threat_type),
-                            pick(row["campaign"], source.campaign), now, indicator_id))
+            updates.append((now, expires, pick(row["malware"], malware), pick(row["threat_type"], a.threat_type or source.threat_type),
+                            pick(row["campaign"], source.campaign), pick(row["tags"], a.tags), now, indicator_id))
         await db.executemany(
             """UPDATE indicators SET last_seen = ?, expires_at = ?, status = 'active', malware = ?, threat_type = ?,
-                                      campaign = ?, updated_at = ? WHERE id = ?""",
+                                      campaign = ?, tags = ?, updated_at = ? WHERE id = ?""",
             updates,
         )
         if manual:
@@ -278,6 +289,10 @@ async def _ingest_batch(db, source, batch, now, analyst_confidence, allow, resul
             if source.note:
                 await db.execute(f"UPDATE indicators SET note = ? WHERE id IN ({marks})", [source.note, *ids])
         await recompute_confidence(db, list(touched), now)
+
+
+def _confidence(a: Arrival, source: Source) -> int:
+    return max(0, min(100, int(a.confidence))) if a.confidence is not None else source.confidence
 
 
 async def recompute_confidence(db, indicator_ids, now: float | None = None) -> None:
@@ -413,6 +428,9 @@ async def expire_due(db, now: float | None = None) -> tuple[int, int]:
             (now - keep * DAY,),
         )
         deleted = cur.rowcount
+    # SIEM hit counts are kept for 90 days, the daily lookup totals for 400.
+    await db.execute("DELETE FROM indicator_hits WHERE day < ?", (time.strftime("%Y-%m-%d", time.localtime(now - 90 * DAY)),))
+    await db.execute("DELETE FROM lookup_stats WHERE day < ?", (time.strftime("%Y-%m-%d", time.localtime(now - 400 * DAY)),))
     await db.commit()
     return expired, deleted
 

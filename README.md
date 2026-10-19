@@ -63,6 +63,10 @@ fresh install shows exactly what you configure.
   once. SIEMs, firewalls and scripts use the same data through a small
   versioned lookup API (`/api/v1`: lookup, export with incremental `since`,
   health) with their own **SIEM keys**, which can't reach anything else.
+  Built-in readers for ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker,
+  SSLBL and the AbuseIPDB blacklist; promote values from the news with one
+  click; see which indicators your SIEMs actually looked up, and which
+  articles mention each one.
   It lives in its own database file, so a large import never slows the
   dashboard.
 - **Sources.** Health at a glance: healthy and failing counts, last

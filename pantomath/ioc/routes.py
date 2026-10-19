@@ -16,33 +16,41 @@ Every route opens ioc.db through `ioc_db()`, which turns a database that
 can't be opened into a 503 with the reason, so the rest of Pantomath is
 unaffected.
 """
+import asyncio
 import csv
 import datetime
 import io
 import json
+import os
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from pantomath import __version__
 from pantomath.api.routes import _client_ip, require_settings_auth, require_viewer
 from pantomath.auth import sign_in
 from pantomath.database.sqlite import get_db
-from pantomath.ioc.db import IocUnavailable, get_ioc_db
+from pantomath.ioc.db import IOC_DB_PATH, IocUnavailable, get_ioc_db
 from pantomath.ioc.feeds import (
     DEFAULT_MAX_MB,
+    FORMATS,
     MAX_MB_LIMIT,
     MIN_INTERVAL,
     IocFeedError,
     check_key_header,
     download_and_parse,
+    nothing_readable,
     parse_list,
+    reader_for_url,
 )
+from pantomath.ioc.hits import day_of, hit_counter
 from pantomath.ioc.normalize import (
     TYPE_LABELS,
     TYPES,
@@ -53,10 +61,12 @@ from pantomath.ioc.normalize import (
     normalize_allow_entry,
     refang,
 )
+from pantomath.ioc.readers import READERS
 from pantomath.ioc.scheduler import IocScheduler
 from pantomath.ioc.store import (
     KEEP_EXPIRED_CHOICES,
     MANUAL,
+    PROMOTED,
     Source,
     apply_allowlist,
     explain_confidence,
@@ -78,7 +88,9 @@ MAX_LOOKUP_VALUES = 1000
 MAX_MANUAL_BYTES = 20 * 1024 * 1024
 TYPE_GROUPS = {"ip": ("ipv4", "ipv6"), "hash": ("md5", "sha1", "sha256"), "network": ("ja3", "ja4", "x509")}
 STATUSES = ("active", "expired", "false_positive", "allowlisted")
-FORMATS = ("text", "csv")
+LIST_FORMATS = ("text", "csv")      # what can be pasted or imported by hand
+# Where the news side keeps each kind of value it extracts (items.ips...).
+NEWS_COLUMNS = {"ipv4": "ips", "ipv6": "ips", "md5": "hashes", "sha1": "hashes", "sha256": "hashes", "email": "emails"}
 
 
 @asynccontextmanager
@@ -139,12 +151,14 @@ def _local_midnight() -> float:
 
 # ------------------------------------------------------------------ lookups
 
-async def lookup_values(db, values: list[str], include_expired: bool = False, for_people: bool = False) -> dict:
+async def lookup_values(db, values: list[str], include_expired: bool = False, for_people: bool = False,
+                        hits: list | None = None) -> dict:
     """
     The one lookup both the tab and /api/v1 use. Every value is matched on
     the UNIQUE (type, value) index, in one query for the whole request. A
     miss is a normal result. `for_people` adds what an analyst wants and a
-    SIEM doesn't: the row id, and why a stored value doesn't match.
+    SIEM doesn't: the row id, and why a stored value doesn't match. The id
+    of every match is appended to `hits`, for the SIEM hit counts.
     """
     wanted = []
     for raw in values:
@@ -196,6 +210,8 @@ async def lookup_values(db, values: list[str], include_expired: bool = False, fo
             results.append(result)
             continue
         matched += 1
+        if hits is not None:
+            hits.append(hit["id"])
         result = {
             "value": raw, "type": hit["type"], "match": True, "status": hit["status"], "confidence": hit["confidence"],
             "threat_type": hit["threat_type"] or None, "malware": hit["malware"] or None, "campaign": hit["campaign"] or None,
@@ -259,6 +275,13 @@ async def ioc_summary():
         malware = [{"name": r["malware"], "count": r["n"]} for r in await cur.fetchall()]
         cur = await db.execute("SELECT id, name, enabled, last_status, last_success FROM ioc_feeds ORDER BY name")
         feeds = [dict(r) for r in await cur.fetchall()]
+        today = day_of(now)
+        cur = await db.execute("SELECT lookups, matches FROM lookup_stats WHERE day = ?", (today,))
+        stored = await cur.fetchone()
+        cur = await db.execute("SELECT DISTINCT indicator_id FROM indicator_hits WHERE day >= ?", (day_of(now - 6 * 86400),))
+        seen = {r["indicator_id"] for r in await cur.fetchall()}
+        pending_lookups, pending_matches, pending_hits = hit_counter.pending(today)
+        seen |= set(pending_hits)
         return {
             "active": sum(by_type.values()),
             "by_type": by_type,
@@ -276,12 +299,23 @@ async def ioc_summary():
                 "list": [{"id": f["id"], "name": f["name"]} for f in feeds],
             },
             "last_feed_update": max((f["last_success"] or 0 for f in feeds), default=0) or None,
+            "siem": {
+                "lookups_today": (stored["lookups"] if stored else 0) + pending_lookups,
+                "matches_today": (stored["matches"] if stored else 0) + pending_matches,
+                "indicators_seen_week": len(seen),
+            },
             "types": [{"type": t, "label": TYPE_LABELS[t]} for t in TYPES],
         }
 
 
-def _indicator_conditions(type_, q, status, min_confidence, malware, source):
+def _indicator_conditions(type_, q, status, min_confidence, malware, source, seen_days=0):
     conditions, params = [], []
+    if seen_days:
+        since = day_of(time.time() - (seen_days - 1) * 86400)
+        pending = sorted(hit_counter.pending_since(since))   # counted, not written yet
+        conditions.append("(EXISTS (SELECT 1 FROM indicator_hits h WHERE h.indicator_id = indicators.id AND h.day >= ?)"
+                          + (f" OR indicators.id IN ({','.join('?' * len(pending))})" if pending else "") + ")")
+        params += [since, *pending]
     types = type_filter(type_)
     if types:
         conditions.append(f"type IN ({','.join('?' * len(types))})")
@@ -313,19 +347,24 @@ def _indicator_conditions(type_, q, status, min_confidence, malware, source):
 @ioc_router.get("/api/ioc/indicators")
 async def list_indicators(type: str | None = None, q: str | None = None, status: str = "active",
                           min_confidence: int = 0, malware: str | None = None, source: str | None = None,
-                          limit: int = 50, offset: int = 0):
+                          seen_days: int = 0, limit: int = 50, offset: int = 0):
+    """`seen_days`: only indicators your SIEMs looked up in that many days, today included."""
     limit = max(1, min(limit, 200))
-    conditions, params = _indicator_conditions(type, q, status, min_confidence, malware, source)
+    conditions, params = _indicator_conditions(type, q, status, min_confidence, malware, source, max(0, min(seen_days, 90)))
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     async with ioc_db() as db:
         cur = await db.execute(f"SELECT COUNT(*) FROM indicators{where}", params)
         total = (await cur.fetchone())[0]
         cur = await db.execute(
-            f"""SELECT indicators.*, (SELECT COUNT(*) FROM sightings s WHERE s.indicator_id = indicators.id AND s.active = 1) AS sources
+            f"""SELECT indicators.*,
+                       (SELECT COUNT(*) FROM sightings s WHERE s.indicator_id = indicators.id AND s.active = 1) AS sources,
+                       (SELECT COALESCE(SUM(count), 0) FROM indicator_hits h WHERE h.indicator_id = indicators.id AND h.day >= ?) AS hits_week
                 FROM indicators{where} ORDER BY last_seen DESC, id DESC LIMIT ? OFFSET ?""",
-            [*params, limit, max(0, offset)],
+            [day_of(time.time() - 6 * 86400), *params, limit, max(0, offset)],
         )
         items = [dict(r) for r in await cur.fetchall()]
+    for item in items:
+        item["hits_week"] += hit_counter.pending_for(item["id"])[0]
     return {"total": total, "items": items}
 
 
@@ -348,10 +387,59 @@ async def get_indicator(indicator_id: int):
             except ValueError:
                 s["context"] = {}
             sightings.append(s)
+        now = time.time()
+        cur = await db.execute(
+            """SELECT COALESCE(SUM(CASE WHEN day = ? THEN count END), 0) AS today,
+                      COALESCE(SUM(CASE WHEN day >= ? THEN count END), 0) AS week,
+                      COALESCE(SUM(count), 0) AS total, MAX(last_hit) AS last_hit
+               FROM indicator_hits WHERE indicator_id = ?""",
+            (day_of(now), day_of(now - 6 * 86400), indicator_id),
+        )
+        hits = dict(await cur.fetchone())
+    pending_count, pending_last = hit_counter.pending_for(indicator_id)
+    indicator["siem_hits"] = {
+        "today": hits["today"] + pending_count, "week": hits["week"] + pending_count, "days_90": hits["total"] + pending_count,
+        "last_hit": max(hits["last_hit"] or 0, pending_last) or None,
+    }
     indicator["sightings"] = sightings
     indicator["confidence_explained"] = explain_confidence(sightings, indicator["analyst_confidence"])
     indicator["type_label"] = TYPE_LABELS.get(indicator["type"], indicator["type"])
     return indicator
+
+
+@ioc_router.get("/api/ioc/indicators/{indicator_id}/mentions")
+async def indicator_mentions(indicator_id: int, limit: int = 5):
+    """
+    Where the news mentions this value: the only place the IOC side reads
+    pantomath.db, and only reads. IPs, hashes and emails match the values
+    extracted from articles; other types are looked for in titles and
+    summaries.
+    """
+    async with ioc_db() as db:
+        cur = await db.execute("SELECT type, value FROM indicators WHERE id = ?", (indicator_id,))
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "No such indicator")
+    column = NEWS_COLUMNS.get(row["type"])
+    if column:
+        where, params = f"(',' || items.{column} || ',') LIKE ?", [f"%,{row['value']},%"]
+    else:
+        pattern = "%" + row["value"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where, params = "(items.title LIKE ? ESCAPE '\\' OR items.summary LIKE ? ESCAPE '\\')", [pattern, pattern]
+    db = await get_db()
+    try:
+        cur = await db.execute(f"SELECT COUNT(*) FROM items WHERE {where}", params)
+        count = (await cur.fetchone())[0]
+        cur = await db.execute(
+            f"""SELECT items.id, items.title, items.link, items.severity, items.fetched_at, sources.name AS source_name
+                FROM items JOIN sources ON sources.id = items.source_id WHERE {where}
+                ORDER BY items.fetched_at DESC LIMIT ?""",
+            [*params, max(1, min(limit, 20))],
+        )
+        items = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    return {"count": count, "items": items, "field": column}
 
 
 # ----------------------------------------------------- analyst changes
@@ -368,6 +456,7 @@ class ManualIn(BaseModel):
     lifetime_days: int = 0
     note: str = ""
     reference: str = ""
+    promoted: bool = False      # values an analyst moved over from the Indicators tab or an article
 
 
 def _clean(text: str, limit: int) -> str:
@@ -388,10 +477,15 @@ def _check_confidence(value: int) -> int:
 
 @ioc_protected_router.post("/api/ioc/indicators")
 async def add_indicators(body: ManualIn):
-    """Manual entry, a pasted list or a CSV file: every value through the same rules as a feed."""
+    """
+    Manual entry, a pasted list or a CSV file, and values promoted from the
+    news side: every value through the same rules as a feed. Promoted values
+    get their own source ("Promoted from the news"), so it stays clear they
+    were found in article text and checked by a person.
+    """
     if len(body.text.encode()) > MAX_MANUAL_BYTES:
         raise HTTPException(413, "That's more than 20 MB. Publish the list at a URL and add it as an IOC feed instead.")
-    if body.format not in FORMATS:
+    if body.format not in LIST_FORMATS:
         raise HTTPException(400, "Format is 'text' or 'csv'.")
     if body.type and body.type not in TYPES:
         raise HTTPException(400, f"Unknown type '{body.type}'.")
@@ -399,7 +493,9 @@ async def add_indicators(body: ManualIn):
         parsed = parse_list(body.text, body.format, body.type, body.value_column)
     except IocFeedError as e:
         raise HTTPException(400, str(e)) from None
-    source = Source(id=MANUAL, name="Added by hand", confidence=_check_confidence(body.confidence),
+    source = Source(id=PROMOTED if body.promoted else MANUAL,
+                    name="Promoted from the news" if body.promoted else "Added by hand",
+                    confidence=_check_confidence(body.confidence),
                     lifetime_days=_check_lifetime(body.lifetime_days), threat_type=_clean(body.threat_type, 40),
                     malware=_clean(body.malware, 100), campaign=_clean(body.campaign, 100),
                     reference=_clean(body.reference, 500), note=(body.note or "").strip()[:2000])
@@ -545,7 +641,7 @@ def _check_feed_fields(values: dict) -> dict:
             if not value.lower().startswith(("http://", "https://")):
                 raise HTTPException(400, "The list URL must start with http:// or https://.")
         elif name == "format" and value not in FORMATS:
-            raise HTTPException(400, "Format is 'text' or 'csv'.")
+            raise HTTPException(400, f"Format is one of: {', '.join(FORMATS)}.")
         elif name == "default_type" and value and value not in TYPES:
             raise HTTPException(400, f"Unknown type '{value}'.")
         elif name == "confidence":
@@ -561,6 +657,9 @@ def _check_feed_fields(values: dict) -> dict:
         elif name in ("enabled", "snapshot"):
             value = int(bool(value))
         out[name] = value
+    reader = READERS.get(out.get("format", ""))
+    if reader and out.get("interval_seconds", reader.min_interval) < reader.min_interval:
+        raise HTTPException(400, f"{reader.label} can be fetched at most every {reader.min_interval // 3600} hours.")
     try:
         check_key_header(out.get("key_header", ""), out.get("key_value", ""))
     except IocFeedError as e:
@@ -586,7 +685,8 @@ async def list_feeds():
         counts = {r["source"]: r["n"] for r in await cur.fetchall()}
     for feed in feeds:
         feed["indicators"] = counts.get(feed["id"], 0)
-    return {"feeds": feeds, "manual": counts.get(MANUAL, 0)}
+    return {"feeds": feeds, "manual": counts.get(MANUAL, 0), "promoted": counts.get(PROMOTED, 0),
+            "readers": [r.describe() for r in READERS.values()]}
 
 
 @ioc_protected_router.post("/api/ioc/feeds/test")
@@ -607,7 +707,13 @@ async def test_feed(body: FeedTestIn):
         return {"ok": False, "error": str(e)}
     except Exception as e:  # anything unexpected is still a failed test, not a 500
         return {"ok": False, "error": str(e)[:200] or e.__class__.__name__}
-    return {"ok": True, "duration_ms": int((time.monotonic() - started) * 1000), **parsed.summary()}
+    out = {"ok": True, "duration_ms": int((time.monotonic() - started) * 1000), **parsed.summary()}
+    reader = reader_for_url(fields.get("url", ""))
+    if reader and fields.get("format") != reader.name:
+        out["suggest_reader"] = {"name": reader.name, "label": reader.label}
+    if not parsed.arrivals and parsed.rejected:
+        out["warning"] = nothing_readable(fields, parsed)
+    return out
 
 
 @ioc_protected_router.post("/api/ioc/feeds")
@@ -649,7 +755,9 @@ async def edit_feed(feed_id: str, body: FeedEditIn):
             except sqlite3.IntegrityError:
                 raise HTTPException(400, "A feed with this URL already exists.") from None
             await db.commit()
-        if "confidence" in fields and fields["confidence"] != current["confidence"]:
+        reader = READERS.get(fields.get("format", current["format"]))
+        if "confidence" in fields and fields["confidence"] != current["confidence"] and not (reader and reader.per_value_confidence):
+            # Feeds that give each value its own confidence (ThreatFox, AbuseIPDB) keep it.
             await set_source_confidence(db, feed_id, fields["confidence"])
         if "name" in fields:
             await db.execute("UPDATE sightings SET source_name = ? WHERE source = ?", (fields["name"], feed_id))
@@ -696,6 +804,35 @@ async def update_ioc_settings(body: IocSettingsIn):
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         return {"keep_expired_days": await keep_expired_days(db)}
+
+
+# ------------------------------------------------------------------ backup
+
+@ioc_protected_router.get("/api/ioc/backup")
+async def backup_ioc_database():
+    """
+    A consistent copy of ioc.db (VACUUM INTO, safe while feeds are being
+    written), separate from the dashboard's backup. It holds the IOC feeds'
+    keys, so it needs the Settings password like the main backup.
+    """
+    fd, path = tempfile.mkstemp(prefix=".ioc-backup-", suffix=".db", dir=os.path.dirname(os.path.abspath(IOC_DB_PATH)))
+    os.close(fd)
+    os.remove(path)
+
+    def copy():
+        con = sqlite3.connect(IOC_DB_PATH)
+        try:
+            con.execute("VACUUM INTO ?", (path,))
+        finally:
+            con.close()
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, copy)
+    except sqlite3.Error as e:
+        if os.path.exists(path):
+            os.remove(path)
+        raise HTTPException(503, f"The IOC database couldn't be copied: {e}") from None
+    name = f"pantomath-ioc-backup-{time.strftime('%Y-%m-%d')}.db"
+    return FileResponse(path, filename=name, media_type="application/octet-stream", background=BackgroundTask(os.remove, path))
 
 
 # --------------------------------------------------------------- allowlist
@@ -791,15 +928,21 @@ siem_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_siem_key
 
 @siem_router.get("/lookup")
 async def v1_lookup_one(value: str, include_expired: bool = False):
+    matched: list[int] = []
     async with ioc_db() as db:
-        result = await lookup_values(db, [value.strip()], include_expired)
+        result = await lookup_values(db, [value.strip()], include_expired, hits=matched)
+    hit_counter.record(matched, 1)
     return result["results"][0]
 
 
 @siem_router.post("/lookup")
 async def v1_lookup(body: LookupIn):
+    values = _lookup_list(body)
+    matched: list[int] = []
     async with ioc_db() as db:
-        return await lookup_values(db, _lookup_list(body), body.include_expired)
+        result = await lookup_values(db, values, body.include_expired, hits=matched)
+    hit_counter.record(matched, len(values))
+    return result
 
 
 EXPORT_COLUMNS = ("type", "value", "status", "confidence", "threat_type", "malware", "campaign", "first_seen", "last_seen", "expires_at")
@@ -809,15 +952,21 @@ EXPORT_COLUMNS = ("type", "value", "status", "confidence", "threat_type", "malwa
 async def v1_export(type: str | None = None, min_confidence: int = 0, malware: str | None = None, feed: str | None = None,
                     format: str = "txt", since: str | None = None, include_expired: bool = False):
     """
-    Whole lists for a SIEM lookup table, a Wazuh CDB list or a firewall's
-    external block list. Without `since`: what matches now (active, or
+    Whole lists for a SIEM lookup table, a firewall's external block list
+    or (cdb) a Wazuh CDB list. Without `since`: what matches now (active, or
     also expired with include_expired). With `since`: every indicator that
     changed after that time, whatever its status, so a sync can remove what
     expired; txt can't say that, so it lists only the active ones. The
     X-Pantomath-Exported-At header is the `since` to send next time.
+
+    `cdb` is a Wazuh CDB list: `key:confidence` per line, keys with a colon
+    (URLs, IPv6) in double quotes. Wazuh reloads a list only when the
+    manager restarts, so it is always the whole list, never `since`.
     """
-    if format not in ("txt", "csv", "json"):
-        raise HTTPException(400, "format is txt, csv or json")
+    if format not in ("txt", "csv", "json", "cdb"):
+        raise HTTPException(400, "format is txt, csv, json or cdb")
+    if format == "cdb" and since:
+        raise HTTPException(400, "A CDB list is always the whole list: leave out since")
     since_ts = parse_since(since)
     if since_ts is not None and format != "txt":
         status = "all"
@@ -863,6 +1012,12 @@ async def v1_export(type: str | None = None, min_confidence: int = 0, malware: s
         if format == "txt":
             async for r in rows():
                 yield r["value"] + "\n"
+        elif format == "cdb":
+            async for r in rows():
+                value = r["value"]
+                if '"' in value or "\n" in value:
+                    continue                          # can't be written as a CDB key
+                yield (f'"{value}"' if ":" in value else value) + f":{r['confidence']}\n"
         elif format == "csv":
             buffer = io.StringIO()
             writer = csv.writer(buffer)
@@ -883,7 +1038,7 @@ async def v1_export(type: str | None = None, min_confidence: int = 0, malware: s
                 first = False
             yield "]}\n"
 
-    media = {"txt": "text/plain", "csv": "text/csv", "json": "application/json"}[format]
+    media = {"txt": "text/plain", "cdb": "text/plain", "csv": "text/csv", "json": "application/json"}[format]
     return StreamingResponse(body(), media_type=f"{media}; charset=utf-8",
                              headers={"X-Pantomath-Exported-At": iso(exported_at)})
 

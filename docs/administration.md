@@ -226,8 +226,11 @@ sudo pantomath-admin setup-https
 It:
 
 - installs nginx (Debian/Ubuntu, with `apt-get`);
-- creates a self-signed certificate (an existing one is kept, so anything that
-  already trusts it keeps working);
+- creates a self-signed certificate naming this server's host names and IP
+  addresses, so browsers, SIEMs and scripts can verify it by whichever one
+  they connect to (an existing certificate is kept, so anything that already
+  trusts it keeps working; `--renew-certificate` replaces it and keeps the
+  old one as `*.replaced-<date>`);
 - adds an nginx site that forwards to Pantomath;
 - turns off nginx's stock default site by moving it to `/etc/nginx/sites-available/default.disabled-by-pantomath` (not deleted; move it back to re-enable). It also repairs servers where an earlier version only renamed it inside `sites-enabled/`, which left it active;
 - checks the configuration with `nginx -t` before reloading;
@@ -235,7 +238,11 @@ It:
   in (recommended).
 
 It asks before every change unless you pass `--yes`, and it's safe to run
-again. Browsers warn about a self-signed certificate until it's trusted;
+again. Certificates made before 1.3.0 carry only the name `pantomath.local`,
+which clients that check certificates (a SIEM calling the lookup API, `curl`
+without `-k`) can't match: run `sudo pantomath-admin setup-https
+--renew-certificate` once, then give those clients
+`/etc/nginx/ssl/pantomath.crt` as their CA file. Browsers warn about a self-signed certificate until it's trusted;
 for a company-wide setup, replace it with a certificate from your internal
 CA in the nginx site configuration.
 
@@ -256,7 +263,7 @@ firewall either way.
 | Article pages linked from feeds | Once per new item, with deep extraction on | Better ratings and indicators (8 s timeout, first 400 KB) |
 | `www.google.com/s2/favicons` | Once per source (cached; a failure is retried after an hour) | Source icons |
 | `www.cisa.gov` | Once a day (hourly retries after a failure) | The Exploited marks |
-| Each IOC feed's address | On the feed's own schedule (at most every 15 minutes) | The IOC database |
+| Each IOC feed's address | On the feed's own schedule (at most every 15 minutes) | The IOC database. The built-in readers use `threatfox.abuse.ch`, `urlhaus.abuse.ch`, `bazaar.abuse.ch`, `feodotracker.abuse.ch`, `sslbl.abuse.ch` and `api.abuseipdb.com` |
 | Each webhook's address | When a new item matches | Alerts |
 | `pypi.org` | At install, only if the package has no bundled wheels | Installing |
 
@@ -340,8 +347,10 @@ addresses, so store it as carefully as the server itself.
 
 **The IOC database is not in that backup.** Most of it is feed data that can
 be downloaded again; what can't is what your team entered: indicators added
-by hand, false-positive marks, the allowlist and the feeds' settings and
-keys. Back it up the same way:
+by hand or promoted, false-positive marks, the allowlist and the feeds'
+settings and keys. Download it from Settings, Backup and restore, **Download
+IOC backup** (a consistent copy, safe while feeds are updating), or on the
+server:
 
 ```bash
 sudo -u pantomath sqlite3 /var/lib/pantomath/ioc.db ".backup /tmp/pantomath-ioc.db"

@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS sightings (
     UNIQUE(indicator_id, source)
 );
 
+CREATE TABLE IF NOT EXISTS indicator_hits (   -- SIEM lookups that matched, per indicator and day (hits.py)
+    indicator_id INTEGER NOT NULL REFERENCES indicators(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,                -- YYYY-MM-DD, server time
+    count INTEGER DEFAULT 0,
+    last_hit REAL DEFAULT 0,
+    PRIMARY KEY (indicator_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS lookup_stats (     -- every SIEM lookup, per day
+    day TEXT PRIMARY KEY,
+    lookups INTEGER DEFAULT 0,        -- values looked up
+    matches INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS ioc_settings (
     key TEXT PRIMARY KEY,             -- e.g. keep_expired_days (see store.keep_expired_days)
     value TEXT
@@ -93,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_indicators_last_seen ON indicators(last_seen DESC
 CREATE INDEX IF NOT EXISTS idx_indicators_status_expires ON indicators(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_indicators_updated ON indicators(updated_at);
 CREATE INDEX IF NOT EXISTS idx_sightings_source ON sightings(source, last_seen);
+CREATE INDEX IF NOT EXISTS idx_indicator_hits_day ON indicator_hits(day);
 """
 
 # Same pattern as database/models.py's MIGRATIONS: (table, column,

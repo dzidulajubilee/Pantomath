@@ -252,24 +252,26 @@ certificates), or several types separated by commas.
 
 | Endpoint | Parameters | Returns |
 |---|---|---|
-| `GET /api/ioc/summary` | — | `{active, by_type, by_status, added_today, expiring_week, malware: [{name, count}], feeds: {total, enabled, ok, failing, list}, last_feed_update}` |
-| `GET /api/ioc/indicators` | `type`, `q` (words in the value, malware, campaign, threat type, tags or note), `status` (`active`; several with commas, or `all`), `min_confidence`, `malware`, `source` (a feed id or `manual`), `limit` (50, at most 200), `offset` | `{total, items}`; each item also has `sources`, the number of sources reporting it now |
-| `GET /api/ioc/indicators/{id}` | — | The indicator with `sightings` (`source_name`, `confidence`, `reference`, `first_seen`, `last_seen`, `active`, `context`) and `confidence_explained` |
+| `GET /api/ioc/summary` | — | `{active, by_type, by_status, added_today, expiring_week, malware: [{name, count}], feeds: {total, enabled, ok, failing, list}, last_feed_update, siem: {lookups_today, matches_today, indicators_seen_week}}` |
+| `GET /api/ioc/indicators` | `type`, `q` (words in the value, malware, campaign, threat type, tags or note), `status` (`active`; several with commas, or `all`), `min_confidence`, `malware`, `source` (a feed id, `manual` or `promoted`), `seen_days` (only ones your SIEMs looked up in that many days, today included), `limit` (50, at most 200), `offset` | `{total, items}`; each item also has `sources` (how many report it now) and `hits_week` (SIEM lookups in 7 days) |
+| `GET /api/ioc/indicators/{id}` | — | The indicator with `sightings` (`source_name`, `confidence`, `reference`, `first_seen`, `last_seen`, `active`, `context`), `confidence_explained` and `siem_hits: {today, week, days_90, last_hit}` |
+| `GET /api/ioc/indicators/{id}/mentions` | `limit` (5) | Stored news items that mention it: `{count, items: [{id, title, link, severity, fetched_at, source_name}], field}`. IPs, hashes and emails match the extracted values (`field` is `ips`, `hashes` or `emails`); other types are found in titles and summaries (`field` null) |
 | `POST /api/ioc/lookup` | `{values: [...], include_expired}` | As `/api/v1/lookup` (section 10), plus each stored value's `id`, and for a miss the `status` or the `reason` it can't match |
 
 **Settings-level**
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/ioc/indicators` | Add by hand: `{text, format ("text" or "csv"), value_column, type ("" detects), confidence, threat_type, malware, campaign, lifetime_days (0 each type's default, -1 never), reference, note}` → `{added, updated, rejected, rejected_samples, allowlisted, false_positive}` |
+| `POST /api/ioc/indicators` | Add by hand: `{text, format ("text" or "csv"), value_column, type ("" detects), confidence, threat_type, malware, campaign, lifetime_days (0 each type's default, -1 never), reference, note, promoted}` → `{added, updated, rejected, rejected_samples, allowlisted, false_positive}`. `promoted: true` files them under the source *Promoted from the news* |
 | `PATCH /api/ioc/indicators/{id}` | `{status ("active" or "false_positive"), confidence (null goes back to the sources' number), threat_type, malware, campaign, tags, note}` |
 | `DELETE /api/ioc/indicators/{id}` | Remove it and its sightings. A feed that still lists it adds it again; mark it a false positive to keep it out |
-| `GET /api/ioc/feeds` | `{feeds, manual}`: every feed with its health (`last_status`, `last_success`, `last_count`, `last_new`, `last_dropped`, `last_rejected`), `indicators` (active ones it reports) and `has_key`. The key itself is never returned |
+| `GET /api/ioc/feeds` | `{feeds, manual, promoted, readers}`: every feed with its health (`last_status`, `last_success`, `last_count`, `last_new`, `last_dropped`, `last_rejected`), `indicators` (active ones it reports) and `has_key`. The key itself is never returned |
 | `POST /api/ioc/feeds/test` | The fields below, without saving: `{ok, lines, valid, skipped, rejected, rejected_samples, by_type, sample, columns, preview_rows, value_column, duration_ms}` or `{ok: false, error}` |
-| `POST /api/ioc/feeds` | `{name, url, format, value_column, date_column, malware_column, default_type, confidence, threat_type, lifetime_days, interval_seconds (at least 900), enabled, snapshot, max_mb (1-500), key_header, key_value}` |
+| `POST /api/ioc/feeds` | `{name, url, format, value_column, date_column, malware_column, default_type, confidence, threat_type, lifetime_days, interval_seconds (at least 900), enabled, snapshot, max_mb (1-500), key_header, key_value}`. `format` is `text`, `csv` or a built-in reader: `threatfox`, `urlhaus`, `malwarebazaar`, `feodo`, `sslbl`, `abuseipdb` (each one's defaults are in `readers` above; `abuseipdb` at least every 18,000 s) |
 | `PATCH /api/ioc/feeds/{id}` | Change fields; an empty `key_value` keeps the stored key, `clear_key: true` removes it |
 | `POST /api/ioc/feeds/{id}/run` | Download it now: `{ok, values, new, refreshed, unchanged, dropped, rejected}`, `{ok: true, unchanged: true}` if the list hasn't changed, or `{ok: false, error}` |
 | `DELETE /api/ioc/feeds/{id}` | Remove it; indicators only it reported expire now |
+| `GET /api/ioc/backup` | A consistent copy of `ioc.db` (it holds the feeds' keys) |
 | `GET /api/ioc/settings`, `PATCH /api/ioc/settings` | `{keep_expired_days}`: how long expired indicators are kept before deletion: 30, 90 (default), 180, 365 or 730, or 0 for ever |
 | `GET /api/ioc/allowlist`, `POST /api/ioc/allowlist`, `DELETE /api/ioc/allowlist/{id}` | `{value, reason}`: an IP, a range (`198.51.100.0/24`), a domain (covers subdomains, and URLs and emails on them) or any exact value |
 
@@ -290,7 +292,7 @@ value's type and restores defanged text. A miss is a normal `200` with
 |---|---|---|
 | `GET /api/v1/lookup` | `value`, `include_expired` | One result, as below |
 | `POST /api/v1/lookup` | `{values: [...] (up to 1,000), include_expired}` | `{checked, matched, results}` |
-| `GET /api/v1/export` | `type`, `min_confidence`, `malware`, `feed` (a feed id or `manual`), `format` (`txt`, `csv` or `json`), `since`, `include_expired` | Whole lists, streamed. See below |
+| `GET /api/v1/export` | `type`, `min_confidence`, `malware`, `feed` (a feed id or `manual`), `format` (`txt`, `csv`, `json` or `cdb`), `since`, `include_expired` | Whole lists, streamed. See below |
 | `GET /api/v1/health` | — | `{status ("ok" or "degraded" when a feed is failing), version, indicators: {active, by_type}, feeds: {total, enabled, failing}, last_feed_update, generated_at}` |
 
 ```
@@ -313,7 +315,7 @@ When a value is stored in a different spelling (`HXXP://Evil[.]Example/`),
 the result also has `normalized`.
 
 **Export.** Without `since`, the values that match now: `txt` is one value
-per line, ready for a firewall's external block list or a Wazuh CDB list;
+per line, ready for a firewall's external block list;
 `csv` and `json` add `type, value, status, confidence, threat_type, malware,
 campaign, first_seen, last_seen, expires_at`. With `since` (a Unix time or
 ISO time), every indicator that changed after it, **whatever its status**,
@@ -324,8 +326,17 @@ rounded down to the second, so a change made during an export is sent again
 next time rather than missed. Deleted indicators don't appear; a full export
 now and then catches those.
 
+`cdb` is a Wazuh CDB list: one `key:confidence` line per indicator, keys
+containing a colon (URLs, IPv6) in double quotes. It is always the whole
+list (`since` is refused), since Wazuh reloads lists only on restart.
+
 High-volume SIEMs should pull `export?since=` every few minutes and match
 locally, rather than call `lookup` per event.
+
+Every `lookup` that matches counts a hit for that indicator, shown on the
+IOC database tab ("which indicators your network actually touched"). Hits
+are added up in memory and written every 30 seconds, so lookups never write
+to the database; exports don't count.
 
 ## 11. WebSocket
 

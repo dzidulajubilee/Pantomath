@@ -25,7 +25,7 @@ const IOC_STATUS_LABEL = { active: 'Active', expired: 'Expired', false_positive:
 const IOCDB_PAGE = 50;
 
 const iocdb = {
-  type: '', q: '', status: 'active', minConfidence: 0, malware: '', source: '', page: 1,
+  type: '', q: '', status: 'active', minConfidence: 0, malware: '', source: '', seenDays: 0, page: 1,
   items: [], total: 0, summary: null, selectedId: null, shown: null, editing: false,
 };
 
@@ -72,6 +72,7 @@ async function loadIocDatabase() {
   if (iocdb.minConfidence) params.set('min_confidence', String(iocdb.minConfidence));
   if (iocdb.malware) params.set('malware', iocdb.malware);
   if (iocdb.source) params.set('source', iocdb.source);
+  if (iocdb.seenDays) params.set('seen_days', String(iocdb.seenDays));
   let summaryRes, listRes;
   try {
     [summaryRes, listRes] = await Promise.all([fetch('/api/ioc/summary'), fetch('/api/ioc/indicators?' + params)]);
@@ -113,6 +114,8 @@ function renderIocdbKpis(s) {
     { label: 'Added today', value: fmtNumber(s.added_today), note: 'first reported since midnight' },
     { label: 'Expire within 7 days', value: fmtNumber(s.expiring_week), note: 'unless a source reports them again' },
     { label: 'Feeds updating', value: feeds.enabled ? `${feeds.ok} / ${feeds.enabled}` : '0', tone: feeds.failing.length ? 'bad' : '', note: feedNote },
+    { label: 'SIEM lookups today', value: fmtNumber(s.siem.lookups_today), tone: s.siem.matches_today ? 'high' : '',
+      note: s.siem.lookups_today ? `${plural(s.siem.matches_today, 'match', 'matches')}; ${plural(s.siem.indicators_seen_week, 'indicator')} hit this week` : 'no SIEM has looked anything up today' },
   ];
   document.getElementById('iocdbKpis').innerHTML = cells.map(c => `
     <div class="kpi static">
@@ -134,7 +137,8 @@ function renderIocdbFilters(s) {
   const malware = s.malware.map(m => [m.name, `${m.name} (${fmtNumber(m.count)})`]);
   if (iocdb.malware && !s.malware.some(m => m.name === iocdb.malware)) malware.unshift([iocdb.malware, iocdb.malware]);
   fillSelect('iocdbMalware', [['', 'Any malware'], ...malware], iocdb.malware);
-  fillSelect('iocdbSource', [['', 'Any source'], ['manual', 'Added by hand'], ...s.feeds.list.map(f => [f.id, f.name])], iocdb.source);
+  fillSelect('iocdbSource', [['', 'Any source'], ['manual', 'Added by hand'], ['promoted', 'Promoted from the news'],
+    ...s.feeds.list.map(f => [f.id, f.name])], iocdb.source);
 }
 
 function confidenceHtml(value) {
@@ -144,7 +148,7 @@ function confidenceHtml(value) {
 
 function renderIocdbTable() {
   const table = document.getElementById('iocdbTable');
-  const filtered = iocdb.type || iocdb.q || iocdb.minConfidence || iocdb.malware || iocdb.source || iocdb.status !== 'active';
+  const filtered = iocdb.type || iocdb.q || iocdb.minConfidence || iocdb.malware || iocdb.source || iocdb.seenDays || iocdb.status !== 'active';
   document.getElementById('iocdbCount').textContent = iocdb.total ? `${plural(iocdb.total, 'indicator')}${filtered ? ' match' : ''}` : '';
   if (!iocdb.items.length) {
     const empty = !iocdb.summary.active && !filtered;
@@ -153,7 +157,7 @@ function renderIocdbTable() {
           <button type="button" class="btn btn-primary" data-act="feed">+ Add an IOC feed</button> <button type="button" class="btn" data-act="add">Add indicators by hand</button></div>`
       : '<div class="card-empty"><strong>Nothing matches these filters</strong>Try another type or status, or clear the filter.</div>';
     table.querySelector('[data-act="feed"]')?.addEventListener('click', () => { openSettingsTab('set-ioc-feeds'); });
-    table.querySelector('[data-act="add"]')?.addEventListener('click', openIocAdd);
+    table.querySelector('[data-act="add"]')?.addEventListener('click', () => openIocAdd());
     renderPagination(document.getElementById('iocdbPagination'), 1, 1, () => {});
     return;
   }
@@ -164,7 +168,7 @@ function renderIocdbTable() {
     </div>` + iocdb.items.map(i => {
     const context = [i.malware, i.campaign].filter(Boolean).join(' · ');
     return `<div class="iocdb-row${i.id === iocdb.selectedId ? ' selected' : ''}" role="row" tabindex="0" data-id="${i.id}">
-      <span class="iocdb-value" role="cell">${escapeHtml(i.value)}${i.status !== 'active' ? ` <span class="status-tag status-${escapeAttr(i.status)}">${escapeHtml(IOC_STATUS_LABEL[i.status] || i.status)}</span>` : ''}</span>
+      <span class="iocdb-value" role="cell">${i.hits_week ? `<span class="hit-tag" title="Looked up by your SIEMs ${plural(i.hits_week, 'time')} in the last 7 days">${fmtNumber(i.hits_week)}×</span> ` : ''}${escapeHtml(i.value)}${i.status !== 'active' ? ` <span class="status-tag status-${escapeAttr(i.status)}">${escapeHtml(IOC_STATUS_LABEL[i.status] || i.status)}</span>` : ''}</span>
       <span role="cell"><span class="chip">${escapeHtml(IOC_TYPE_LABEL[i.type] || i.type)}</span></span>
       <span class="iocdb-cell" role="cell">${escapeHtml(i.threat_type || '—')}</span>
       <span class="iocdb-cell" role="cell">${escapeHtml(context || '—')}</span>
@@ -190,7 +194,8 @@ document.getElementById('iocdbSearch').addEventListener('input', (e) => {
   clearTimeout(iocdbSearchDebounce);
   iocdbSearchDebounce = setTimeout(() => { iocdb.q = e.target.value.trim(); iocdb.page = 1; loadIocDatabase(); }, 300);
 });
-[['iocdbConfidence', 'minConfidence', Number], ['iocdbMalware', 'malware', String], ['iocdbSource', 'source', String], ['iocdbStatus', 'status', String]]
+[['iocdbConfidence', 'minConfidence', Number], ['iocdbMalware', 'malware', String], ['iocdbSource', 'source', String],
+  ['iocdbStatus', 'status', String], ['iocdbSeen', 'seenDays', Number]]
   .forEach(([id, key, cast]) => {
     document.getElementById(id).addEventListener('change', (e) => { iocdb[key] = cast(e.target.value); iocdb.page = 1; loadIocDatabase(); });
   });
@@ -218,17 +223,26 @@ function closeIocDetail() {
   document.querySelectorAll('#iocdbTable .iocdb-row.selected').forEach(r => r.classList.remove('selected'));
 }
 
+const CONTEXT_LABELS = [
+  ['port', 'port'], ['status', 'status'], ['url_status', 'URL'], ['file_type', 'file type'], ['reason', 'listed as'],
+  ['country', 'country'], ['as_name', 'network'], ['reported', 'reported'], ['last_online', 'last online'],
+];
 function sightingHtml(s) {
-  const context = [];
-  if (s.context.port) context.push(`port ${s.context.port}`);
-  if (s.context.reported) context.push(`reported ${s.context.reported}`);
+  const context = CONTEXT_LABELS.filter(([k]) => s.context[k] !== undefined && s.context[k] !== '').map(([k, label]) => `${label} ${s.context[k]}`);
+  const sameFile = s.context.same_file ? Object.entries(s.context.same_file) : [];
   const ref = s.reference ? (/^https?:\/\//i.test(s.reference)
     ? `<a href="${safeHref(s.reference)}" target="_blank" rel="noopener">${escapeHtml(s.reference)}</a>` : escapeHtml(s.reference)) : '';
   return `<div class="sighting${s.active ? '' : ' inactive'}">
     <div class="sighting-head"><strong>${escapeHtml(s.source_name || s.source)}</strong>${confidenceHtml(s.confidence)}</div>
     <div class="sighting-sub">${s.active ? '' : 'No longer listed. '}First ${escapeHtml(timeAgo(s.first_seen))}, last ${escapeHtml(timeAgo(s.last_seen))}${context.length ? `, ${escapeHtml(context.join(', '))}` : ''}.</div>
     ${ref ? `<div class="sighting-ref">${ref}</div>` : ''}
+    ${sameFile.length ? `<div class="sighting-sub">Same file: ${sameFile.map(([t, v]) => `${escapeHtml(IOC_TYPE_LABEL[t] || t)} <button type="button" class="ioc-value inline" data-lookup="${escapeAttr(v)}" title="Look it up">${escapeHtml(v)}</button>`).join(', ')}</div>` : ''}
   </div>`;
+}
+
+function siemHitsText(h) {
+  if (!h || !h.days_90) return 'Not looked up by your SIEMs in the last 90 days.';
+  return `${plural(h.today, 'time')} today, ${fmtNumber(h.week)} in 7 days, ${fmtNumber(h.days_90)} in 90 days. Last ${timeAgo(h.last_hit)}.`;
 }
 
 function renderIocDetail() {
@@ -264,12 +278,14 @@ function renderIocDetail() {
       <dt>First seen</dt><dd>${escapeHtml(fmtFull(i.first_seen))}</dd>
       <dt>Last reported</dt><dd>${escapeHtml(fmtFull(i.last_seen))}</dd>
       <dt>Expires</dt><dd>${escapeHtml(expires)}</dd>
+      <dt>Looked up by SIEMs</dt><dd>${escapeHtml(siemHitsText(i.siem_hits))}</dd>
     </dl>
     ${i.note ? `<p class="detail-summary">${escapeHtml(i.note)}</p>` : ''}
     <section class="detail-section">
       <div class="detail-section-head"><h4>Sources (${i.sightings.length})</h4></div>
       ${i.sightings.length ? i.sightings.map(sightingHtml).join('') : '<p class="muted">No source reports it.</p>'}
     </section>
+    <section class="detail-section" data-role="mentions"><div class="detail-section-head"><h4>In the news</h4></div><p class="muted">Looking…</p></section>
     <form class="iocdb-edit" data-role="edit-form" ${iocdb.editing ? '' : 'hidden'}>
       <h4>Edit</h4>
       <div class="field-grid">
@@ -303,6 +319,34 @@ function renderIocDetail() {
   el.querySelector('[data-role="edit-form"]').onsubmit = (e) => { e.preventDefault(); saveIocEdit(i); };
   el.querySelector('[data-role="fp"]').onclick = (e) => setIocStatus(i, e.currentTarget.dataset.to);
   el.querySelector('[data-role="delete"]').onclick = () => deleteIndicator(i);
+  el.querySelectorAll('[data-lookup]').forEach(btn => {
+    btn.onclick = () => {
+      document.getElementById('iocdbLookupInput').value = btn.dataset.lookup;
+      runIocLookup();
+      document.getElementById('iocdbLookupInput').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
+  });
+  loadIocMentions(i);
+}
+
+// Where the news mentions it. Only a read of the dashboard's database.
+async function loadIocMentions(i) {
+  const res = await fetch(`/api/ioc/indicators/${i.id}/mentions`);
+  const el = document.getElementById('iocdbDetail').querySelector('[data-role="mentions"]');
+  if (!el || !iocdb.shown || iocdb.shown.id !== i.id) return;
+  if (!res.ok) { el.hidden = true; return; }
+  const m = await res.json();
+  if (!m.count) {
+    el.innerHTML = '<div class="detail-section-head"><h4>In the news</h4></div><p class="muted">No stored article mentions it.</p>';
+    return;
+  }
+  el.innerHTML = `<div class="detail-section-head"><h4>In the news</h4>
+      ${m.field ? `<button type="button" class="btn btn-sm" data-role="all-mentions">Show all</button>` : ''}</div>
+    <p class="muted">Mentioned in ${plural(m.count, 'article')}${m.field ? '' : ' (found in titles and summaries)'}.</p>
+    ${m.items.map(a => `<a class="related-link" href="${safeHref(a.link)}" target="_blank" rel="noopener">
+      <span class="related-title">${escapeHtml(a.title)}</span>
+      <span class="related-why">${escapeHtml(a.source_name)}, ${escapeHtml(timeAgo(a.fetched_at))}</span></a>`).join('')}`;
+  el.querySelector('[data-role="all-mentions"]')?.addEventListener('click', () => openMention(m.field, i.value));
 }
 
 async function saveIocEdit(i) {
@@ -408,13 +452,23 @@ function renderIocLookup(body) {
 
 // ------------------------------------------------------- add indicators
 
-async function openIocAdd() {
-  if (!(await ensureSettingsUnlocked(openIocAdd))) return;
+// `prefill` promotes values from the news side: { values, reference, note, promoted: true }.
+let iocAddPromoted = false;
+async function openIocAdd(prefill = {}) {
+  if (!(await ensureSettingsUnlocked(() => openIocAdd(prefill)))) return;
   ['iocAddText', 'iocAddColumn', 'iocAddThreat', 'iocAddMalware', 'iocAddCampaign', 'iocAddReference', 'iocAddNote']
     .forEach(id => { document.getElementById(id).value = ''; });
+  iocAddPromoted = !!prefill.promoted;
+  document.getElementById('iocAddText').value = (prefill.values || []).join('\n');
+  document.getElementById('iocAddReference').value = prefill.reference || '';
+  document.getElementById('iocAddNote').value = prefill.note || '';
+  document.getElementById('iocAddTitle').textContent = iocAddPromoted ? 'Promote to the IOC database' : 'Add indicators';
+  document.getElementById('iocAddSubmit').textContent = iocAddPromoted ? 'Promote' : 'Add indicators';
+  document.getElementById('iocAddPromoteNote').hidden = !iocAddPromoted;
   document.getElementById('iocAddType').value = '';
   document.getElementById('iocAddLifetime').value = '0';
-  document.getElementById('iocAddConfidence').value = '70';
+  // Found in news text is weaker evidence than a feed made for blocking.
+  document.getElementById('iocAddConfidence').value = iocAddPromoted ? '50' : '70';
   document.getElementById('iocAddResult').hidden = true;
   document.getElementById('iocAddColumnField').hidden = true;
   document.getElementById('iocAddFileName').textContent = 'Defanged values are restored. Private addresses are refused.';
@@ -454,6 +508,7 @@ async function submitIocAdd() {
     threat_type: document.getElementById('iocAddThreat').value, malware: document.getElementById('iocAddMalware').value,
     campaign: document.getElementById('iocAddCampaign').value, lifetime_days: Number(document.getElementById('iocAddLifetime').value),
     reference: document.getElementById('iocAddReference').value, note: document.getElementById('iocAddNote').value,
+    promoted: iocAddPromoted,
   };
   const btn = document.getElementById('iocAddSubmit');
   btn.disabled = true;
@@ -480,10 +535,26 @@ async function submitIocAdd() {
   }
 }
 
+// Indicators tab: promote the selected values (or the one being drilled
+// into) to the IOC database. Nothing moves across without a person.
+document.getElementById('iocPromoteBtn').onclick = () => {
+  const values = iocSelection.size ? [...iocSelection] : iocDrilldown && iocDrilldown.type === currentIocType ? [iocDrilldown.value] : [];
+  if (!values.length) { showToast('Tick the indicators to promote, or open one'); return; }
+  openIocAdd({ values, promoted: true, note: 'Found in news articles (Indicators tab)' });
+};
+
 // ------------------------------------------------- Settings: IOC feeds
 
 let iocFeeds = [];
 let iocFeedEditing = null;
+let iocReaders = [];      // built-in readers for well-known feeds (pantomath/ioc/readers.py)
+const readerFor = format => iocReaders.find(r => r.name === format);
+
+function setReaders(readers) {
+  iocReaders = readers || [];
+  document.getElementById('iocFeedReaders').innerHTML = iocReaders
+    .map(r => `<option value="${escapeAttr(r.name)}">${escapeHtml(r.label)}</option>`).join('');
+}
 
 function feedState(f) {
   if (!f.enabled) return 'paused';
@@ -519,8 +590,9 @@ async function loadIocFeedSettings() {
   }
   const data = await res.json();
   iocFeeds = data.feeds;
+  setReaders(data.readers);
   if (!iocFeeds.length) {
-    table.innerHTML = `<div class="card-empty"><strong>No IOC feeds yet</strong>Paste the URL of a list, say what it holds and how often to fetch it, and test it before saving.${data.manual ? ` ${plural(data.manual, 'indicator was', 'indicators were')} added by hand.` : ''}</div>`;
+    table.innerHTML = `<div class="card-empty"><strong>No IOC feeds yet</strong>Pick a built-in reader (ThreatFox, URLhaus, MalwareBazaar, Feodo Tracker, SSLBL, AbuseIPDB), or paste the URL of any plain text or CSV list, and test it before saving.${data.manual ? ` ${plural(data.manual, 'indicator was', 'indicators were')} added by hand.` : ''}</div>`;
     return;
   }
   const label = { healthy: 'Healthy', failing: 'Failing', pending: 'Waiting', paused: 'Paused' };
@@ -532,9 +604,12 @@ async function loadIocFeedSettings() {
     const state = feedState(f);
     const name = escapeAttr(f.name);
     const error = state === 'failing' ? f.last_status.replace(/^error:\s*/, '') : '';
-    const what = [f.format === 'csv' ? 'CSV' : 'Plain text', f.default_type ? IOC_TYPE_LABEL[f.default_type] : 'type detected per value',
-      `confidence ${f.confidence}`, f.threat_type, f.snapshot ? 'snapshot' : '', f.has_key ? 'with a key' : ''].filter(Boolean).join(', ');
-    const last = f.last_success ? `Last download: ${plural(f.last_count, 'value')} changed or new, ${fmtNumber(f.last_new)} new${f.snapshot ? `, ${fmtNumber(f.last_dropped)} dropped off` : ''}${f.last_rejected ? `, ${fmtNumber(f.last_rejected)} refused` : ''}.` : '';
+    const reader = readerFor(f.format);
+    const what = (reader
+      ? [`Built-in reader: ${reader.label}`, reader.per_value_confidence ? "the feed's own confidence" : `confidence ${f.confidence}`]
+      : [f.format === 'csv' ? 'CSV' : 'Plain text', f.default_type ? IOC_TYPE_LABEL[f.default_type] : 'type detected per value', `confidence ${f.confidence}`])
+      .concat([f.threat_type, f.snapshot ? 'snapshot' : '', f.has_key ? 'with a key' : '']).filter(Boolean).join(', ');
+    const last = f.last_success ? `Last download: ${plural(f.last_count, 'value')}, ${fmtNumber(f.last_new)} new${f.snapshot ? `, ${fmtNumber(f.last_dropped)} dropped off` : ''}${f.last_rejected ? `, ${fmtNumber(f.last_rejected)} refused` : ''}.` : '';
     return `<div class="src-row state-${state}" role="row">
       <span class="src-status" role="cell"><span class="health-dot" aria-hidden="true"></span>${label[state]}</span>
       <div class="src-main" role="cell">
@@ -604,6 +679,10 @@ const FEED_NUMBERS = new Set(['confidence', 'interval_seconds', 'lifetime_days',
 
 async function openIocFeedModal(feed) {
   if (!(await ensureSettingsUnlocked(() => openIocFeedModal(feed)))) return;
+  if (!iocReaders.length) {
+    const res = await fetch('/api/ioc/feeds');
+    if (res.ok) setReaders((await res.json()).readers);
+  }
   iocFeedEditing = feed;
   const defaults = { format: 'text', default_type: '', confidence: 75, interval_seconds: 21600, lifetime_days: 0, max_mb: 30 };
   FEED_FIELDS.forEach(([id, key]) => {
@@ -629,10 +708,42 @@ async function openIocFeedModal(feed) {
   document.getElementById('iocFeedOverlay').classList.add('open');
   document.getElementById('iocFeedName').focus();
 }
-function syncFeedFormat() {
-  document.getElementById('iocFeedCsvFields').hidden = document.getElementById('iocFeedFormat').value !== 'csv';
+// `applyDefaults`: the format was just picked, so fill in the reader's own
+// URL, key header, interval and so on, unless the person typed their own.
+function syncFeedFormat(applyDefaults = false) {
+  const format = document.getElementById('iocFeedFormat').value;
+  const reader = readerFor(format);
+  document.getElementById('iocFeedCsvFields').hidden = format !== 'csv';
+  document.getElementById('iocFeedTypeField').hidden = !!reader;
+  document.getElementById('iocFeedConfidenceLabel').textContent = reader && reader.per_value_confidence
+    ? 'Confidence (0–100), when a value has none of its own' : 'Confidence (0–100)';
+  const note = document.getElementById('iocFeedReaderNote');
+  note.hidden = !reader;
+  if (reader) {
+    note.innerHTML = `<strong>${escapeHtml(reader.label)}</strong>${escapeHtml(reader.gives)}.
+      <div class="hint">${escapeHtml(reader.key_note)}${reader.key_required ? ' A key is required.' : ''}
+      Check the <a href="${safeHref(reader.terms_url)}" target="_blank" rel="noopener">terms of use</a> before relying on it.</div>`;
+  }
+  if (!applyDefaults || !reader) return;
+  const isDefault = (id, key) => {
+    const v = document.getElementById(id).value.trim();
+    return !v || iocReaders.some(r => r[key] === v);
+  };
+  if (isDefault('iocFeedName', 'label')) document.getElementById('iocFeedName').value = reader.label;
+  if (isDefault('iocFeedUrl', 'url')) document.getElementById('iocFeedUrl').value = reader.url;
+  if (isDefault('iocFeedKeyHeader', 'key_header')) document.getElementById('iocFeedKeyHeader').value = reader.key_header;
+  if (isDefault('iocFeedThreat', 'threat_type')) document.getElementById('iocFeedThreat').value = reader.threat_type;
+  const interval = document.getElementById('iocFeedInterval');
+  if (![...interval.options].some(o => o.value === String(reader.interval))) {
+    interval.insertAdjacentHTML('beforeend', `<option value="${reader.interval}">${escapeHtml(formatInterval(reader.interval))}</option>`);
+  }
+  interval.value = String(reader.interval);
+  document.getElementById('iocFeedSnapshot').checked = reader.snapshot;
+  document.getElementById('iocFeedConfidence').value = String(reader.confidence);
+  document.getElementById('iocFeedType').value = '';
+  document.getElementById('iocFeedTestResult').hidden = true;
 }
-document.getElementById('iocFeedFormat').addEventListener('change', syncFeedFormat);
+document.getElementById('iocFeedFormat').addEventListener('change', () => syncFeedFormat(true));
 document.getElementById('iocFeedCancel').onclick = () => document.getElementById('iocFeedOverlay').classList.remove('open');
 
 function readFeedForm() {
@@ -667,12 +778,21 @@ async function testIocFeed() {
     return;
   }
   const types = Object.entries(r.by_type).map(([t, n]) => `${fmtNumber(n)} ${IOC_TYPE_LABEL[t] || t}`).join(', ');
-  out.className = 'feed-test ' + (r.valid ? 'ok' : 'bad');
+  const suggest = r.suggest_reader
+    ? `<div class="hint"><strong>This is ${escapeHtml(r.suggest_reader.label)}'s address.</strong> Its built-in reader reads it properly.
+        <button type="button" class="btn btn-sm" id="iocFeedUseReader">Use the ${escapeHtml(r.suggest_reader.label)} reader</button></div>` : '';
+  out.className = 'feed-test ' + (r.valid && !r.suggest_reader ? 'ok' : 'bad');
   out.innerHTML = `<strong>${r.valid ? 'Test passed' : 'Nothing usable in this list'}</strong>
     ${plural(r.lines, 'line')} in ${(r.duration_ms / 1000).toFixed(1)} s: ${escapeHtml(types || 'no indicators')}, ${plural(r.skipped, 'comment or blank line')} skipped, ${fmtNumber(r.rejected)} refused.
     ${r.rejected_samples.length ? `<div class="hint">Refused, for example: ${r.rejected_samples.map(s => `${escapeHtml(s.value)} (${escapeHtml(s.reason)})`).join(', ')}</div>` : ''}
     ${r.sample.length ? `<div class="test-sample">${r.sample.map(v => `<code>${escapeHtml(v)}</code>`).join(' ')}</div>` : ''}
-    ${r.columns.length ? `<div class="hint">Columns: ${r.columns.map(c => escapeHtml(c)).join(', ')}. Values read from <strong>${escapeHtml(r.value_column)}</strong>.</div>` : ''}`;
+    ${r.columns.length ? `<div class="hint">Columns: ${r.columns.map(c => escapeHtml(c)).join(', ')}. Values read from <strong>${escapeHtml(r.value_column)}</strong>.</div>` : ''}
+    ${suggest}`;
+  document.getElementById('iocFeedUseReader')?.addEventListener('click', () => {
+    document.getElementById('iocFeedFormat').value = r.suggest_reader.name;
+    syncFeedFormat(true);
+    testIocFeed();
+  });
   if (r.columns.length) {
     document.getElementById('iocFeedColumns').innerHTML = r.columns.map(c => `<option value="${escapeAttr(c)}">`).join('');
     if (!document.getElementById('iocFeedValueCol').value) document.getElementById('iocFeedValueCol').value = r.value_column;
@@ -752,6 +872,22 @@ async function addAllowEntry() {
 }
 
 // ------------------------------------------------- Settings: SIEM keys
+
+// ------------------------------------------- Settings: IOC backup download
+
+document.getElementById('iocBackupBtn').onclick = async () => {
+  // Fetched as a blob, like the main backup, so the Settings token goes with it.
+  const res = await fetch('/api/ioc/backup');
+  if (res.status === 401) { setSettingsToken(null); showAuthGate('login', () => {}); return; }
+  if (!res.ok) { const b = await res.json().catch(() => ({})); showToast(b.detail || `IOC backup failed (HTTP ${res.status})`); return; }
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || 'pantomath-ioc-backup.db';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 
 document.getElementById('siemKeyCreateBtn').addEventListener('click', async () => {
   const label = document.getElementById('siemKeyLabel').value.trim();

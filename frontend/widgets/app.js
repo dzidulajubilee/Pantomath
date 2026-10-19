@@ -236,7 +236,7 @@ const CATEGORY_COLORS = {
 
 const VIEWS = [
   'dashboard', 'affects-us', 'exploited', 'live-feed', 'critical', 'vulnerabilities', 'malware',
-  'ransomware', 'threat-actors', 'vendors', 'iocs', 'saved', 'sources', 'analytics', 'settings'
+  'ransomware', 'threat-actors', 'vendors', 'iocs', 'ioc-database', 'saved', 'sources', 'analytics', 'settings'
 ];
 const VIEW_LOADERS = {
   'dashboard': loadDashboard,
@@ -250,6 +250,7 @@ const VIEW_LOADERS = {
   'threat-actors': loadThreatActors,
   'vendors': loadVendors,
   'iocs': loadIOCsView,
+  'ioc-database': () => loadIocDatabase(),  // widgets/ioc-database.js
   'saved': () => loadFeedPage('saved'),
   'sources': loadSourcesView,
   'analytics': loadAnalytics,
@@ -1929,10 +1930,14 @@ function renderFeedDetail(panel, i, { force = false } = {}) {
       <a class="btn btn-primary" href="${safeHref(i.link)}" target="_blank" rel="noopener">Open original &#8599;</a>
       <button type="button" class="btn" data-role="save">${i.bookmarked ? '&#9733; Saved' : '&#9734; Save'}</button>
       <button type="button" class="btn" data-role="read-toggle" data-id="${escapeAttr(i.id)}">Mark as unread</button>
+      ${i.ips.length + i.hashes.length + i.emails.length ? '<button type="button" class="btn" data-role="promote" title="Add this item\'s IP addresses, hashes and emails to the IOC database">Promote indicators</button>' : ''}
     </div>`;
   el.querySelector('[data-role="close"]').onclick = () => closeFeedDetail(panel);
   el.querySelector('[data-role="save"]').onclick = () => toggleFeedBookmark(panel, i);
   el.querySelector('[data-role="read-toggle"]').onclick = () => setItemRead(i, isUnread(i));
+  el.querySelector('[data-role="promote"]')?.addEventListener('click', () => openIocAdd({
+    values: [...i.ips, ...i.hashes, ...i.emails], reference: i.link || '', note: i.title, promoted: true,
+  }));
   el.querySelector('.detail-actions a').addEventListener('click', () => setItemRead(i, true));
   if (!force) setItemRead(i, true);  // opening an item is reading it (a re-render isn't)
   const copyAll = el.querySelector('[data-role="copy-all"]');
@@ -2308,6 +2313,9 @@ function updateIocActionBar() {
   document.getElementById('iocCopyBtn').textContent = n ? 'Copy selected' : 'Copy all';
   document.getElementById('iocCsvBtn').textContent = n ? 'Export selected (CSV)' : 'Export CSV';
   document.getElementById('iocListBtn').textContent = currentIocType === 'cve' ? 'Download list (.txt)' : 'Download blocklist (.txt)';
+  // CVEs aren't indicators of compromise; the rest can be promoted (widgets/ioc-database.js).
+  document.getElementById('iocPromoteBtn').hidden = currentIocType === 'cve';
+  document.getElementById('iocPromoteBtn').textContent = n ? 'Promote selected to IOC database' : 'Promote to IOC database';
 }
 
 async function iocRowsForExport() {
@@ -2981,7 +2989,7 @@ async function loadSecuritySettings() {
   const [statusRes, sessionsRes] = await Promise.all([fetch('/api/auth/status'), fetch('/api/auth/sessions')]);
   if (!sessionsRes.ok) return;
   const status = await statusRes.json();
-  const { devices, api_keys: keys } = await sessionsRes.json();
+  const { devices, api_keys: keys, siem_keys: siemKeys = [] } = await sessionsRes.json();
   document.getElementById('teamPwHint').textContent = status.team_password
     ? "Set. People sign in with it to view Pantomath; it can't change settings."
     : 'Not set, so only the Settings password can sign in, and everyone who views Pantomath can also change it. Set a team password for viewers.';
@@ -2998,13 +3006,15 @@ async function loadSecuritySettings() {
       <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(d.id)}" data-current="${d.current ? 1 : 0}">Sign out</button>
     </div>`;
   }).join('');
-  document.getElementById('apiKeyList').innerHTML = keys.map(k => `<div class="device-row">
+  const keyRow = k => `<div class="device-row">
       <span class="device-icon">${KEY_ICON}</span>
       <div><div class="device-name">${escapeHtml(k.label)}</div>
         <div class="device-sub">Created ${escapeHtml(timeAgo(k.created_at))}, last used ${escapeHtml(timeAgo(k.last_seen))}.</div></div>
       <button type="button" class="btn btn-sm" data-revoke="${escapeAttr(k.id)}">Revoke</button>
-    </div>`).join('');
-  document.querySelectorAll('#deviceList [data-revoke], #apiKeyList [data-revoke]').forEach(btn => {
+    </div>`;
+  document.getElementById('apiKeyList').innerHTML = keys.map(keyRow).join('');
+  document.getElementById('siemKeyList').innerHTML = siemKeys.map(keyRow).join('');
+  document.querySelectorAll('#deviceList [data-revoke], #apiKeyList [data-revoke], #siemKeyList [data-revoke]').forEach(btn => {
     btn.onclick = async () => {
       const own = btn.dataset.current === '1';
       if (own && !confirm('Sign out this device?')) return;

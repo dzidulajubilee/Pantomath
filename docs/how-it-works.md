@@ -450,7 +450,7 @@ are checked: keyword (any of a comma-separated list in the title or summary),
 source, minimum priority (Critical ranks above High), only affects us, and
 only exploited. Rules left empty match everything, and all rules that are set must
 match. A match sends an HTTP POST with the JSON payload shown in the
-[user guide](user-guide.md#14-alerts-desktop-notifications-and-webhooks),
+[user guide](user-guide.md#15-alerts-desktop-notifications-and-webhooks),
 with an 8-second timeout, and records the time and outcome on the webhook.
 *Allow self-signed certificates* skips certificate checks for that webhook
 only. A *protected* webhook's URL and settings need its key (stored as a hash;

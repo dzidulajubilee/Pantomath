@@ -1544,14 +1544,19 @@ async def auth_logout(request: Request, response: Response):
 
 @protected_router.get("/api/auth/sessions")
 async def list_signed_in(request: Request):
-    """Signed-in devices and API keys, for Settings, Security."""
+    """Signed-in devices, API keys and SIEM keys, for Settings, Security."""
     token = request.cookies.get(sign_in.COOKIE_NAME)
     db = await get_db()
     try:
         rows = await sign_in.list_sessions(db, sign_in.hash_token(token) if token else None)
     finally:
         await db.close()
-    return {"devices": [r for r in rows if r["kind"] == "browser"], "api_keys": [r for r in rows if r["kind"] == "api"]}
+    keys = [r for r in rows if r["kind"] == "api"]
+    return {
+        "devices": [r for r in rows if r["kind"] == "browser"],
+        "api_keys": [r for r in keys if r["role"] != sign_in.SIEM_ROLE],
+        "siem_keys": [r for r in keys if r["role"] == sign_in.SIEM_ROLE],
+    }
 
 
 @protected_router.delete("/api/auth/sessions/{session_id}")

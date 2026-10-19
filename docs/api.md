@@ -15,8 +15,10 @@ How the pieces fit together is in [how-it-works.md](how-it-works.md#9-the-api-la
 6. [Dashboard and analytics](#6-dashboard-and-analytics)
 7. [Exploited vulnerabilities (read)](#7-exploited-vulnerabilities-read)
 8. [Settings-level endpoints](#8-settings-level-endpoints)
-9. [WebSocket](#9-websocket)
-10. [Examples](#10-examples)
+9. [IOC database](#9-ioc-database)
+10. [Lookup API for SIEMs (/api/v1)](#10-lookup-api-for-siems-apiv1)
+11. [WebSocket](#11-websocket)
+12. [Examples](#12-examples)
 
 ---
 
@@ -29,6 +31,7 @@ Three access levels:
 | **None** | — | Only section 3 and the WebSocket handshake |
 | **Signed in** (read everything) | sign in with a password (browser), or create an **API key** in Settings, Security | cookie `pantomath_session`, or `Authorization: Bearer pmk_…` |
 | **Settings** (change things) | `POST /api/settings/auth/login` with the Settings password, while signed in | `X-Settings-Token: <token>` (valid one hour) |
+| **SIEM** (the lookup API only) | create a **SIEM key** in Settings, Security | `Authorization: Bearer pms_…`, accepted by `/api/v1` and nothing else (section 10) |
 
 For scripts: create an API key, send it as a Bearer token, and for
 Settings-level calls also obtain a Settings token:
@@ -47,7 +50,8 @@ credentials.
 ## 2. Conventions and errors
 
 - Times are Unix timestamps in seconds (UTC), except dates given as
-  `YYYY-MM-DD`, which are days in the server's time zone.
+  `YYYY-MM-DD`, which are days in the server's time zone, and the lookup
+  API (`/api/v1`), which uses ISO 8601 times.
 - List fields on items (`cves`, `vendors`, `watch_hits`…) are JSON arrays.
 - `severity` on items is the **priority**: `critical`, `high`, `medium` or `low`.
 - Errors return `{"detail": "readable message"}`:
@@ -59,6 +63,7 @@ credentials.
 | 404 | Not found |
 | 409 | Conflict: already set up, not set up yet, a duplicate name |
 | 429 | Too many attempts; the message says how long to wait |
+| 503 | The IOC database (`ioc.db`) can't be opened; the message says why. Only sections 9 and 10 |
 
 ## 3. Sign-in endpoints
 
@@ -199,6 +204,7 @@ All need `X-Settings-Token`.
 | `DELETE /api/auth/sessions/{id}` | Sign a device out or revoke a key |
 | `POST /api/auth/sessions/sign-out-others` | Every browser except this one |
 | `POST /api/auth/api-keys` | `{label}` → `{id, key}` (the key is shown only here) |
+| `POST /api/auth/siem-keys` | `{label}` → `{id, key}`: a key for `/api/v1` only (shown only here). `GET /api/auth/sessions` lists them as `siem_keys`; revoke with `DELETE /api/auth/sessions/{id}` |
 | `PUT /api/auth/team-password` | `{password}`; signs out the team |
 | `DELETE /api/auth/team-password` | Remove it; signs out the team |
 
@@ -214,7 +220,7 @@ All need `X-Settings-Token`.
 | `DELETE /api/webhooks/{id}` | Remove |
 
 The payload sent to a webhook is shown in the
-[user guide](user-guide.md#14-alerts-desktop-notifications-and-webhooks).
+[user guide](user-guide.md#15-alerts-desktop-notifications-and-webhooks).
 
 **Settings, storage, backup**
 
@@ -225,7 +231,114 @@ The payload sent to a webhook is shown in the
 | `GET /api/backup` | The database file |
 | `POST /api/restore` | Multipart upload of a backup file (replaces everything) |
 
-## 9. WebSocket
+## 9. IOC database
+
+The IOC database (1.0.0) keeps indicators published by IOC feeds or added by
+your team, in its own file (`ioc.db`). Browsing and looking up need sign-in;
+everything that changes it needs a Settings token, like Sources. If `ioc.db`
+can't be opened these endpoints return **503** with the reason, and the rest
+of the API is unaffected.
+
+An indicator has a `type` (`ipv4`, `ipv6`, `domain`, `url`, `email`, `md5`,
+`sha1`, `sha256`, `ja3`, `ja4`, `x509`), a normalized `value`, a
+`confidence` from 0 to 100, a `status` (`active`, `expired`,
+`false_positive`, `allowlisted`), `threat_type`, `malware`, `campaign`,
+`tags`, `note`, and `first_seen`, `last_seen` and `expires_at` (0 = never).
+Each source that reports it is a **sighting**. Filters that take a `type`
+also accept the groups `ip`, `hash` and `network` (JA3, JA4 and
+certificates), or several types separated by commas.
+
+**Signed in**
+
+| Endpoint | Parameters | Returns |
+|---|---|---|
+| `GET /api/ioc/summary` | — | `{active, by_type, by_status, added_today, expiring_week, malware: [{name, count}], feeds: {total, enabled, ok, failing, list}, last_feed_update, siem: {lookups_today, matches_today, indicators_seen_week}}` |
+| `GET /api/ioc/indicators` | `type`, `q` (words in the value, malware, campaign, threat type, tags or note), `status` (`active`; several with commas, or `all`), `min_confidence`, `malware`, `source` (a feed id, `manual` or `promoted`), `seen_days` (only ones your SIEMs looked up in that many days, today included), `limit` (50, at most 200), `offset` | `{total, items}`; each item also has `sources` (how many report it now) and `hits_week` (SIEM lookups in 7 days) |
+| `GET /api/ioc/indicators/{id}` | — | The indicator with `sightings` (`source_name`, `confidence`, `reference`, `first_seen`, `last_seen`, `active`, `context`), `confidence_explained` and `siem_hits: {today, week, days_90, last_hit}` |
+| `GET /api/ioc/indicators/{id}/mentions` | `limit` (5) | Stored news items that mention it: `{count, items: [{id, title, link, severity, fetched_at, source_name}], field}`. IPs, hashes and emails match the extracted values (`field` is `ips`, `hashes` or `emails`); other types are found in titles and summaries (`field` null) |
+| `POST /api/ioc/lookup` | `{values: [...], include_expired}` | As `/api/v1/lookup` (section 10), plus each stored value's `id`, and for a miss the `status` or the `reason` it can't match |
+
+**Settings-level**
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/ioc/indicators` | Add by hand: `{text, format ("text" or "csv"), value_column, type ("" detects), confidence, threat_type, malware, campaign, lifetime_days (0 each type's default, -1 never), reference, note, promoted}` → `{added, updated, rejected, rejected_samples, allowlisted, false_positive}`. `promoted: true` files them under the source *Promoted from the news* |
+| `PATCH /api/ioc/indicators/{id}` | `{status ("active" or "false_positive"), confidence (null goes back to the sources' number), threat_type, malware, campaign, tags, note}` |
+| `DELETE /api/ioc/indicators/{id}` | Remove it and its sightings. A feed that still lists it adds it again; mark it a false positive to keep it out |
+| `GET /api/ioc/feeds` | `{feeds, manual, promoted, readers}`: every feed with its health (`last_status`, `last_success`, `last_count`, `last_new`, `last_dropped`, `last_rejected`), `indicators` (active ones it reports) and `has_key`. The key itself is never returned |
+| `POST /api/ioc/feeds/test` | The fields below, without saving: `{ok, lines, valid, skipped, rejected, rejected_samples, by_type, sample, columns, preview_rows, value_column, duration_ms}` or `{ok: false, error}` |
+| `POST /api/ioc/feeds` | `{name, url, format, value_column, date_column, malware_column, default_type, confidence, threat_type, lifetime_days, interval_seconds (at least 900), enabled, snapshot, max_mb (1-500), key_header, key_value}`. `format` is `text`, `csv` or a built-in reader: `threatfox`, `urlhaus`, `malwarebazaar`, `feodo`, `sslbl`, `abuseipdb` (each one's defaults are in `readers` above; `abuseipdb` at least every 18,000 s) |
+| `PATCH /api/ioc/feeds/{id}` | Change fields; an empty `key_value` keeps the stored key, `clear_key: true` removes it |
+| `POST /api/ioc/feeds/{id}/run` | Download it now: `{ok, values, new, refreshed, unchanged, dropped, rejected}`, `{ok: true, unchanged: true}` if the list hasn't changed, or `{ok: false, error}` |
+| `DELETE /api/ioc/feeds/{id}` | Remove it; indicators only it reported expire now |
+| `GET /api/ioc/backup` | A consistent copy of `ioc.db` (it holds the feeds' keys) |
+| `GET /api/ioc/settings`, `PATCH /api/ioc/settings` | `{keep_expired_days}`: how long expired indicators are kept before deletion: 30, 90 (default), 180, 365 or 730, or 0 for ever |
+| `GET /api/ioc/allowlist`, `POST /api/ioc/allowlist`, `DELETE /api/ioc/allowlist/{id}` | `{value, reason}`: an IP, a range (`198.51.100.0/24`), a domain (covers subdomains, and URLs and emails on them) or any exact value |
+
+## 10. Lookup API for SIEMs (/api/v1)
+
+A small, versioned contract for SIEMs, firewalls and scripts. It stays put
+while the dashboard's own `/api` routes change with the interface. It is
+read-only and only accepts **SIEM keys** (`Authorization: Bearer pms_…`);
+browser sessions and ordinary API keys get 401. Times here are ISO 8601 in
+UTC (`2026-10-18T22:40:00Z`).
+
+Lookups return only active indicators unless `include_expired` is true, and
+never false positives or allowlisted values. Pantomath works out each
+value's type and restores defanged text. A miss is a normal `200` with
+`"match": false`.
+
+| Endpoint | Parameters | Returns |
+|---|---|---|
+| `GET /api/v1/lookup` | `value`, `include_expired` | One result, as below |
+| `POST /api/v1/lookup` | `{values: [...] (up to 1,000), include_expired}` | `{checked, matched, results}` |
+| `GET /api/v1/export` | `type`, `min_confidence`, `malware`, `feed` (a feed id or `manual`), `format` (`txt`, `csv`, `json` or `cdb`), `since`, `include_expired` | Whole lists, streamed. See below |
+| `GET /api/v1/health` | — | `{status ("ok" or "degraded" when a feed is failing), version, indicators: {active, by_type}, feeds: {total, enabled, failing}, last_feed_update, generated_at}` |
+
+```
+POST /api/v1/lookup
+Authorization: Bearer pms_…
+{"values": ["203.0.113.45", "login-secure-update.example", "198.51.100.200"]}
+
+{"checked": 3, "matched": 2, "results": [
+  {"value": "203.0.113.45", "type": "ipv4", "match": true, "status": "active",
+   "confidence": 85, "threat_type": "c2", "malware": "QakBot", "campaign": null,
+   "first_seen": "2026-10-02T09:14:00Z", "last_seen": "2026-10-18T22:40:00Z",
+   "expires_at": "2026-11-17T22:40:00Z",
+   "sources": [{"name": "ThreatFox", "confidence": 75, "reference": "https://…"},
+               {"name": "Feodo Tracker", "confidence": 75}]},
+  {"value": "login-secure-update.example", "type": "domain", "match": true, …},
+  {"value": "198.51.100.200", "type": "ipv4", "match": false}]}
+```
+
+When a value is stored in a different spelling (`HXXP://Evil[.]Example/`),
+the result also has `normalized`.
+
+**Export.** Without `since`, the values that match now: `txt` is one value
+per line, ready for a firewall's external block list;
+`csv` and `json` add `type, value, status, confidence, threat_type, malware,
+campaign, first_seen, last_seen, expires_at`. With `since` (a Unix time or
+ISO time), every indicator that changed after it, **whatever its status**,
+so an incremental sync can also remove what expired or was marked a false
+positive (`txt` lists only the active ones, since it can't say more). Send
+the response's `X-Pantomath-Exported-At` header as the next `since`. It is
+rounded down to the second, so a change made during an export is sent again
+next time rather than missed. Deleted indicators don't appear; a full export
+now and then catches those.
+
+`cdb` is a Wazuh CDB list: one `key:confidence` line per indicator, keys
+containing a colon (URLs, IPv6) in double quotes. It is always the whole
+list (`since` is refused), since Wazuh reloads lists only on restart.
+
+High-volume SIEMs should pull `export?since=` every few minutes and match
+locally, rather than call `lookup` per event.
+
+Every `lookup` that matches counts a hit for that indicator, shown on the
+IOC database tab ("which indicators your network actually touched"). Hits
+are added up in memory and written every 30 seconds, so lookups never write
+to the database; exports don't count.
+
+## 11. WebSocket
 
 `/ws` (same host, `wss://` behind HTTPS). The browser's sign-in cookie is
 checked when it connects; without a valid one the connection is closed with
@@ -234,7 +347,7 @@ code **4401**. Messages are JSON:
 - `{"type": "new_items", "items": [ …items as in section 4… ]}`: just stored;
 - `{"type": "sources_changed"}`: a source was added, changed or removed.
 
-## 10. Examples
+## 12. Examples
 
 Critical and high items from the last 24 hours:
 
@@ -256,4 +369,19 @@ Everything that affects your stack and is being exploited:
 
 ```bash
 curl -s -H "Authorization: Bearer $KEY" "https://pantomath.example/api/items?affects_us=true&exploited=true"
+```
+
+Keep a firewall's block list of confident C2 addresses up to date (a SIEM key):
+
+```bash
+curl -s -H "Authorization: Bearer $SIEM_KEY" \
+  "https://pantomath.example/api/v1/export?type=ip&min_confidence=70&format=txt" > c2-ips.txt
+```
+
+Check a handful of values from an alert:
+
+```bash
+curl -s -H "Authorization: Bearer $SIEM_KEY" -H "Content-Type: application/json" \
+  -d '{"values": ["203.0.113.45", "hxxp://login-secure-update[.]example/"]}' \
+  https://pantomath.example/api/v1/lookup | jq '.results[] | select(.match)'
 ```

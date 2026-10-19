@@ -187,7 +187,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "setup-https":
         try:
-            setup_https(port=args.port, assume_yes=args.yes)
+            setup_https(port=args.port, assume_yes=args.yes, renew_certificate=args.renew_certificate)
         except SetupAborted as e:
             print(f"Aborted: {e}")
             sys.exit(1)

@@ -27,11 +27,14 @@ Safety principles followed throughout:
     left alone rather than recreated.
 """
 import argparse
+import ipaddress
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
+import time
 
 NGINX_SSL_DIR = pathlib.Path("/etc/nginx/ssl")
 CERT_PATH = NGINX_SSL_DIR / "pantomath.crt"
@@ -168,7 +171,35 @@ def _try_systemctl(*args: str) -> bool:
         return False
 
 
-def setup_https(port: int = 7373, assume_yes: bool = False) -> None:
+def certificate_names() -> tuple[str, list[str]]:
+    """
+    (common name, subjectAltName entries) for the self-signed certificate:
+    this server's host names and IP addresses. Clients verify the name
+    they connect to against the subjectAltName, never the common name, so
+    a certificate without it can't be verified at all: a SIEM calling
+    https://<server IP>/api/v1 would have to switch verification off.
+    """
+    fqdn = (socket.getfqdn() or "").strip().lower()
+    entries: list[str] = []
+    for name in (fqdn, socket.gethostname().strip().lower(), "pantomath.local", "localhost"):
+        if name and f"DNS:{name}" not in entries:
+            entries.append(f"DNS:{name}")
+    try:
+        addresses = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=5).stdout.split()
+    except Exception:
+        addresses = []
+    for value in ["127.0.0.1", *addresses]:
+        try:
+            ip = ipaddress.ip_address(value.split("%")[0])
+        except ValueError:
+            continue
+        if ip.is_link_local or f"IP:{ip}" in entries:
+            continue
+        entries.append(f"IP:{ip}")
+    return fqdn if "." in fqdn else "pantomath.local", entries
+
+
+def setup_https(port: int = 7373, assume_yes: bool = False, renew_certificate: bool = False) -> None:
     _require_root()
 
     if shutil.which("nginx") is None:
@@ -203,16 +234,26 @@ def setup_https(port: int = 7373, assume_yes: bool = False) -> None:
             print("Leaving the default site enabled — you may see the nginx welcome page instead of Pantomath.")
 
     NGINX_SSL_DIR.mkdir(parents=True, exist_ok=True)
+    if CERT_PATH.exists() and KEY_PATH.exists() and renew_certificate:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for path in (CERT_PATH, KEY_PATH):
+            path.rename(path.with_name(f"{path.name}.replaced-{stamp}"))
+        print(f"Moved the old certificate and key aside (*.replaced-{stamp}).")
     if CERT_PATH.exists() and KEY_PATH.exists():
-        print(f"Certificate already exists at {CERT_PATH} — leaving it in place.")
+        print(f"Certificate already exists at {CERT_PATH} — leaving it in place "
+              "(--renew-certificate makes a new one).")
     else:
-        print("Generating a self-signed certificate (825 day validity)...")
+        common_name, alt_names = certificate_names()
+        print("Generating a self-signed certificate (825 day validity) for:")
+        print("  " + ", ".join(alt_names))
         _run([
             "openssl", "req", "-x509", "-nodes", "-days", "825", "-newkey", "rsa:2048",
-            "-keyout", str(KEY_PATH), "-out", str(CERT_PATH), "-subj", "/CN=pantomath.local",
+            "-keyout", str(KEY_PATH), "-out", str(CERT_PATH), "-subj", f"/CN={common_name}",
+            "-addext", "subjectAltName=" + ",".join(alt_names),
         ], capture_output=True)
         KEY_PATH.chmod(0o600)
         print(f"Wrote {CERT_PATH} and {KEY_PATH}.")
+        print(f"Clients that check certificates (a SIEM, scripts) can trust {CERT_PATH} as their CA file.")
 
     config = NGINX_CONFIG_TEMPLATE.format(cert=CERT_PATH, key=KEY_PATH, port=port)
     SITE_AVAILABLE.parent.mkdir(parents=True, exist_ok=True)
@@ -273,3 +314,5 @@ def build_arg_parser(subparsers) -> None:
     )
     p.add_argument("--port", type=int, default=7373, help="Port Pantomath is running on (default: 7373).")
     p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts.")
+    p.add_argument("--renew-certificate", action="store_true",
+                   help="Replace the existing self-signed certificate (the old one is kept as *.replaced-<date>).")

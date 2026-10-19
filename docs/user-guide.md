@@ -19,15 +19,16 @@ every rule it applies, is in [how-it-works.md](how-it-works.md).
 7. [Critical & high, Vulnerabilities, Malware, Ransomware, Saved](#7-critical--high-vulnerabilities-malware-ransomware-saved)
 8. [Vendors and Threat actors](#8-vendors-and-threat-actors)
 9. [Indicators](#9-indicators)
-10. [Analytics](#10-analytics)
-11. [Search](#11-search)
-12. [Sources (administrators)](#12-sources-administrators)
-13. [Settings (administrators)](#13-settings-administrators)
-14. [Alerts: desktop notifications and webhooks](#14-alerts-desktop-notifications-and-webhooks)
-15. [Setting up a wall screen](#15-setting-up-a-wall-screen)
-16. [Using the API](#16-using-the-api)
-17. [Keyboard shortcuts](#17-keyboard-shortcuts)
-18. [Questions and problems](#18-questions-and-problems)
+10. [IOC database](#10-ioc-database)
+11. [Analytics](#11-analytics)
+12. [Search](#12-search)
+13. [Sources (administrators)](#13-sources-administrators)
+14. [Settings (administrators)](#14-settings-administrators)
+15. [Alerts: desktop notifications and webhooks](#15-alerts-desktop-notifications-and-webhooks)
+16. [Setting up a wall screen](#16-setting-up-a-wall-screen)
+17. [Using the API](#17-using-the-api)
+18. [Keyboard shortcuts](#18-keyboard-shortcuts)
+19. [Questions and problems](#19-questions-and-problems)
 
 ---
 
@@ -72,7 +73,7 @@ minute.
 
 **Header** (top of every page):
 
-- **Search box**: see [Search](#11-search). Press `/` to jump to it.
+- **Search box**: see [Search](#12-search). Press `/` to jump to it.
 - **"N sources failing"**: shown only when some feeds can't be read. Click
   it to see why.
 - **Live status**: *Live · updated 5 s ago* while data is flowing,
@@ -86,7 +87,7 @@ minute.
 **Sidebar**, grouped:
 
 - *Overview*: Dashboard, Affects us, Exploited, Live feed, Critical & high
-- *Investigate*: Indicators, Vulnerabilities, Malware, Ransomware
+- *Investigate*: Indicators, IOC database, Vulnerabilities, Malware, Ransomware
 - *Intelligence*: Threat actors, Vendors, Sources
 - *Workspace*: Saved
 - *System*: Analytics, Settings
@@ -290,7 +291,105 @@ shows when you click that day. Hover a day for "N CVEs in M articles". Click
 a day to narrow the table and list that day's articles; **Clear date** goes
 back to all time. The arrows move between months.
 
-## 10. Analytics
+## 10. IOC database
+
+Indicators of compromise collected on purpose: from **IOC feeds** (lists
+published at a URL, set up in Settings), and from your team. Each one keeps
+where it came from, how confident its sources are, and when it expires. SIEMs,
+firewalls and scripts check values against the same data through the lookup
+API ([api.md](api.md#10-lookup-api-for-siems-apiv1)).
+
+It is a different thing from **Indicators** (section 9): those are values
+found by pattern matching in article text, which also picks up researchers'
+example addresses and hashes of clean files. Nothing moves from one to the
+other automatically: a person **promotes** values (below).
+
+**The summary** shows how many indicators are active, how many were added
+today, how many expire within 7 days unless a source reports them again, how
+many IOC feeds are updating (a failing one is named), and how many values
+your SIEMs looked up today, with how many matched.
+
+**Look up values.** Paste up to 1,000 IP addresses, domains, URLs, hashes or
+email addresses, one per line, and press **Look up** (or Ctrl+Enter).
+Defanged values such as `hxxp://evil[.]example` work. Each value shows
+**Match** with its confidence, threat type, malware and sources, or **No
+match**, with the reason when there is one (a private address, a value
+marked as a false positive, one on the allowlist). Expired indicators only
+match with *Include expired indicators* ticked. Click a matched value to open
+its details.
+
+**The table**, most recently reported first, 50 per page. The type buttons
+(All, IP, Domain, URL, Hash, Email, JA3 / JA4 / cert) show how many active
+indicators there are of each; the filters narrow by text, confidence,
+malware, source (a feed, *Added by hand* or *Promoted from the news*),
+status (Active by default; Expired, False positives, Allowlisted or every
+status), and whether your SIEMs looked it up today, in the last 7 or the last
+30 days. A red **N×** before a value is how many times your SIEMs looked it
+up in the last 7 days: an indicator your network actually touched.
+
+| Column | Meaning |
+|---|---|
+| Confidence | 0 to 100: the highest any source gives, plus 10 for each further source, at most 100. A number an analyst sets wins |
+| Sources | How many sources report it now |
+| Last seen | The last time any source reported it |
+
+**Details.** Click a row for its confidence and where the number comes from
+("85: highest source 75 (ThreatFox) + 10 × 1 more source"), its threat type,
+malware and campaign, first and last report, when it expires, and every
+source with its own confidence, reference and anything it said (a port,
+whether a URL is still online, the file type). A source that no longer lists
+it is shown faded. For a file hash from MalwareBazaar, *Same file* names the
+sample's other two hashes; click one to look it up. **Looked up by SIEMs**
+says how often your SIEMs asked about it today, in 7 and in 90 days, and when
+last. **In the news** says how many stored articles mention it, with the
+newest ones; *Show all* opens them on the Indicators tab.
+
+**Changing indicators** needs the Settings password, because SIEMs and
+firewalls act on what's here:
+
+- **Edit**: confidence (empty uses the sources' number), threat type,
+  malware, campaign, tags and a note. Feeds never overwrite what you type;
+  they only fill fields that are empty.
+- **Mark as false positive**: lookups and exports stop returning it, and no
+  feed can bring it back. **Not a false positive** undoes it.
+- **Delete**: removes it. A feed that still lists it adds it again, so to keep
+  a value out for good, mark it as a false positive instead.
+
+**Promoting from the news.** On the **Indicators** tab, tick IP addresses,
+hashes or emails (or open one) and press **Promote to IOC database**; in any
+article's detail panel, **Promote indicators** takes that article's IP
+addresses, hashes and emails, with the article as the reference. Both open
+the same form as *Add indicators*, with a warning to check each value
+first and a confidence of 50, and the values get their own source,
+*Promoted from the news*. CVEs aren't indicators of compromise, so they
+can't be promoted.
+
+**+ Add indicators**: paste values one per line, or **Import a CSV or text
+file** (for a CSV, name the column holding the values, or leave it empty and
+Pantomath picks it). Set the type (or let Pantomath detect it), confidence,
+threat type, malware, campaign, lifetime, a reference and a note; they apply
+to every value. The result says how many were new, how many were already
+stored, and which values were refused and why.
+
+**How values are stored.** Each value is stored once, in one spelling:
+lowercase domains and hashes, international domain names as punycode,
+defanged text restored, `ip:port` stored as the IP (the port is kept with
+the source). Private, loopback, link-local, multicast and other non-public
+addresses are refused, so your own networks can't become indicators. A
+32-character hash is taken to be MD5 and a 40- or 64-character one SHA-1 or
+SHA-256; for JA3 or certificate fingerprints, which look the same, choose
+the type.
+
+**Expiry.** An indicator expires when no source has reported it for its
+lifetime, counted from the last report: IP addresses 30 days; domains, URLs
+and email senders 90 days; JA3, JA4 and certificates 180 days; hashes never.
+A feed or a manual entry can set its own lifetime. An expired indicator that
+a source reports again becomes active again. Expired indicators are never
+returned to SIEMs; they stay under the Expired filter and are deleted 90 days
+after they expire, or after the time chosen in Settings, IOC feeds, *Keep
+expired indicators for* (30 days to 2 years, or forever).
+
+## 11. Analytics
 
 Trends over **7 d, 30 d, 90 d or 12 months**, all by published date:
 
@@ -307,7 +406,7 @@ Trends over **7 d, 30 d, 90 d or 12 months**, all by published date:
 - **Categories**, by the category of each item's source.
 - **Indicators found**: distinct values of each type.
 
-## 11. Search
+## 12. Search
 
 The search box in the header:
 
@@ -317,7 +416,7 @@ The search box in the header:
 
 Press `/` from anywhere to jump to it.
 
-## 12. Sources (administrators)
+## 13. Sources (administrators)
 
 Sources are the RSS and Atom feeds Pantomath reads. Pantomath starts with
 none.
@@ -360,7 +459,7 @@ until the Settings password is entered).
 The category matters: it decides what shows on the Vulnerabilities and
 Malware pages, and the Categories chart in Analytics.
 
-## 13. Settings (administrators)
+## 14. Settings (administrators)
 
 Settings shows one section at a time; the menu on the left switches between
 them and your last choice is remembered.
@@ -392,9 +491,67 @@ update failed); **Update now** downloads it immediately. **Catalog address**
 can point at an internal copy of the same JSON file on a server without
 internet access; leave it empty for CISA's official feed.
 
+**IOC feeds**: lists of indicators published at a URL that fill the IOC
+database. **+ Add IOC feed** asks for:
+
+- *Format*: one of the **built-in readers**, which fill in everything else,
+  or any plain text or CSV list (below). The built-in readers:
+
+  | Reader | Gives you | Key |
+  |---|---|---|
+  | ThreatFox (abuse.ch) | IPs with ports, domains, URLs and hashes from the last 48 hours, with malware family, threat type and ThreatFox's own confidence for each | abuse.ch's free Auth-Key, if they ask for it |
+  | URLhaus (abuse.ch) | Malware download URLs from the last 30 days, with tags and whether each is still online | as above |
+  | MalwareBazaar (abuse.ch) | SHA-256, MD5 and SHA-1 of recent malware samples, each its own indicator, with the malware family | as above |
+  | Feodo Tracker (abuse.ch) | The current botnet C2 blocklist, with ports (a snapshot list) | not needed today |
+  | SSLBL (abuse.ch) | SHA-1 fingerprints of certificates used by malware C2 (a snapshot list) | not needed today |
+  | AbuseIPDB blacklist | IPs reported for abuse, with AbuseIPDB's confidence score for each (a snapshot list) | a free AbuseIPDB key, required; fetched at most every 5 hours (the free plan allows 5 downloads a day) |
+
+  Picking one fills in its name, address, key header, interval, threat type
+  and whether it's a snapshot; you can still change them, for example to
+  point at an internal mirror. ThreatFox and AbuseIPDB give each value its
+  own confidence; the feed's confidence is only used when a value has none.
+
+- *Name* and *List URL* (http or https; an internal mirror works the same way).
+- *Format*: plain text, one value per line (blank lines and lines starting
+  with `#` are skipped; only the first word of a line is read), or CSV. For a
+  CSV, *Test feed* lists the columns and picks the one holding the values;
+  you can change it, and add a malware column and a date column.
+- *Indicator type*: detected for each value, or fixed when the list holds
+  only one kind, which also refuses anything that doesn't fit.
+- *Confidence*, *Threat type* and *Lifetime*: given to every value from the
+  feed, since plain lists carry no context.
+- *Fetch every*: 15 minutes to 24 hours. Pantomath asks the server whether
+  the list changed and skips it if not.
+- *Snapshot*: for lists of the current bad set, such as a C2 blocklist. A
+  value that drops off the list stops counting for this feed at the next
+  download; if another source still reports it, it stays active on that
+  evidence. Leave it off for lists that only add.
+- *Key header* and *Key*: for lists that need a key (abuse.ch's free
+  `Auth-Key`, for example). The key is stored on the server and never shown
+  again.
+- *Size limit*: 30 MB unless you raise it, up to 500 MB.
+
+**Test feed** downloads the list and reads it without saving anything:
+how many lines, how many of each type, how many comment lines were skipped
+and which values were refused and why. The feeds table shows each feed's
+health the way Sources does, with what the last download brought (new
+values, values that dropped off a snapshot list, refused values). **Update
+now** downloads one straight away; the other buttons edit, pause and remove
+it. Removing a feed expires the indicators only it reported. *Keep expired
+indicators for* (90 days by default; 30 days, 6 months, 1 or 2 years, or
+forever) decides how long expired indicators stay before they are deleted.
+Pantomath ships with no IOC feeds. Check each feed's terms before relying on it.
+
+**Allowlist**: values the IOC database must never hold. Add an IP address, a
+range such as `198.51.100.0/24`, a domain (which also covers its subdomains,
+and URLs and email addresses on them) or any exact value, with a reason.
+Matching values from feeds are dropped on arrival, and stored ones stop
+being returned by lookups and exports straight away. Removing an entry
+brings them back.
+
 **Alerts**
 
-- *Desktop notifications* and *Notify me for*: see [Alerts](#14-alerts-desktop-notifications-and-webhooks).
+- *Desktop notifications* and *Notify me for*: see [Alerts](#15-alerts-desktop-notifications-and-webhooks).
 - *Webhooks*: see the same section.
 
 **Storage**
@@ -411,6 +568,11 @@ internet access; leave it empty for CISA's official feed.
 
 - *Download backup*: the whole database (items, sources, settings, webhooks,
   sign-ins) as one SQLite file.
+  The IOC database is a separate file (`ioc.db`) and isn't in this backup.
+- *Download IOC backup*: a copy of the IOC database (indicators, their
+  sources, false-positive marks, the allowlist, and the IOC feeds with their
+  keys). Restoring it is done on the server; see the
+  [administration guide](administration.md#9-data-backups-and-retention).
 - *Restore from file*: replaces **everything** with a backup. A safety copy
   of the current database is kept on the server first.
 - *Export sources*: the source list as JSON.
@@ -424,10 +586,14 @@ internet access; leave it empty for CISA's official feed.
 - *Signed-in devices*: every browser that's signed in, with how it signed in,
   whether it's remembered, when it was last active and from which address.
   **Sign out** ends one; **Sign out all other devices** ends all but yours.
-- *API keys*: see [Using the API](#16-using-the-api).
+- *API keys*: see [Using the API](#17-using-the-api).
+- *SIEM keys*: keys for SIEMs, firewalls and scripts that check values
+  against the IOC database. A SIEM key can call the lookup API (`/api/v1`)
+  and nothing else; it can't read the dashboard or change settings. Create
+  one per system, so each can be revoked alone.
 - Reminders for resetting the Settings password and enabling HTTPS.
 
-## 14. Alerts: desktop notifications and webhooks
+## 15. Alerts: desktop notifications and webhooks
 
 **Desktop notifications** are your browser's own pop-ups. Turn them on in
 Settings, Alerts, allow them when the browser asks, and choose the lowest
@@ -475,7 +641,7 @@ chat tools display as-is, plus the structured data):
 
 `severity` carries the priority (critical, high, medium or low).
 
-## 15. Setting up a wall screen
+## 16. Setting up a wall screen
 
 1. On the screen's browser, open Pantomath and sign in with the **team
    password**, ticking **Remember this device**. It stays signed in for 90
@@ -490,7 +656,7 @@ chat tools display as-is, plus the structured data):
 If the team password changes, or someone signs the screen out in Settings,
 Security, it shows the sign-in page again.
 
-## 16. Using the API
+## 17. Using the API
 
 Scripts and other dashboards read Pantomath's data with an **API key**:
 
@@ -507,7 +673,18 @@ curl -H "Authorization: Bearer pmk_…" "https://pantomath.example/api/items?sev
 A key can read everything but change nothing. Revoke it from the same
 list. The endpoints are described in [api.md](api.md).
 
-## 17. Keyboard shortcuts
+SIEMs and firewalls that check values against the IOC database use a **SIEM
+key** instead (Settings, Security, **SIEM keys**), with the lookup API:
+
+```bash
+curl -H "Authorization: Bearer pms_…" "https://pantomath.example/api/v1/lookup?value=203.0.113.45"
+curl -H "Authorization: Bearer pms_…" "https://pantomath.example/api/v1/export?type=ip&min_confidence=70&format=txt"
+```
+
+A SIEM key works only there, and an API key doesn't work there. See
+[api.md](api.md#10-lookup-api-for-siems-apiv1).
+
+## 18. Keyboard shortcuts
 
 | Key | Where | What it does |
 |---|---|---|
@@ -519,7 +696,7 @@ list. The endpoints are described in [api.md](api.md).
 
 Shortcuts are ignored while you're typing in a field.
 
-## 18. Questions and problems
+## 19. Questions and problems
 
 **Why is an item High when nothing we run is involved?** It describes a
 serious flaw (zero-day, RCE, ransomware…) or has a CVE on CISA's list. Open
@@ -543,7 +720,7 @@ address), *could not resolve the host name* or *no response* (network or DNS
 from the server).
 
 **Desktop notifications never appear.** They need HTTPS and an open
-Pantomath tab. See [Alerts](#14-alerts-desktop-notifications-and-webhooks).
+Pantomath tab. See [Alerts](#15-alerts-desktop-notifications-and-webhooks).
 
 **The page asks me to sign in again.** Your session ended or was signed
 out. Sign in again; tick Remember this device on your own computer.
